@@ -9,6 +9,7 @@ from .captions import AssCaptionRenderer
 from .effects import OVERLAY_ANIMATIONS, TRANSITIONS, normalize_effect
 from .errors import ConfigurationError
 from .models import (
+    CaptionRenderer,
     CaptionTheme,
     Clip,
     Effect,
@@ -18,6 +19,7 @@ from .models import (
     RenderResult,
     RenderSettings,
     Script,
+    ScriptParser,
     Speaker,
     TextOverlay,
     WordAligner,
@@ -34,7 +36,7 @@ class Project:
         self.speakers: dict[str, Speaker] = {}
         self.script_data: Script | None = None
         self.caption_theme = CaptionTheme.preset("pop")
-        self.caption_renderer = AssCaptionRenderer()
+        self.caption_renderer: CaptionRenderer = AssCaptionRenderer()
         self.overlays: list[Overlay] = []
         self.text_overlays: list[TextOverlay] = []
         self.global_effects: list[Effect] = []
@@ -220,11 +222,11 @@ class Project:
         )
         return self
 
-    def script(self, source: str, *, parser: Any = None) -> Project:
+    def script(self, source: str, *, parser: ScriptParser | None = None) -> Project:
         self.script_data = (parser or RotScriptParser()).parse(source)
         return self
 
-    def script_file(self, path: str | Path, *, parser: Any = None) -> Project:
+    def script_file(self, path: str | Path, *, parser: ScriptParser | None = None) -> Project:
         selected = parser or RotScriptParser()
         if hasattr(selected, "parse_file"):
             self.script_data = selected.parse_file(path)
@@ -288,7 +290,7 @@ class Project:
         self.aligner = aligner
         return self
 
-    def with_caption_renderer(self, renderer: Any) -> Project:
+    def with_caption_renderer(self, renderer: CaptionRenderer) -> Project:
         self.caption_renderer = renderer
         return self
 

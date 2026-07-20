@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from rot import ConfigurationError, MediaInfo, Project, RenderError
+from rot import CaptionRenderer, ConfigurationError, MediaInfo, Project, RenderError, Script
 from rot.render import Renderer
 
 
@@ -51,3 +51,24 @@ def test_duplicate_clip_ids_and_unknown_text_targets_are_rejected(tmp_path: Path
     )
     with pytest.raises(ConfigurationError, match="unknown clip id"):
         Renderer(missing)._validate()
+
+
+def test_with_caption_renderer_replaces_the_default() -> None:
+    class RecordingRenderer:
+        def render(self, path, utterances, theme, *, width, height):  # noqa: ANN001
+            path.write_text("recorded", encoding="utf-8")
+            return path
+
+    renderer: CaptionRenderer = RecordingRenderer()
+    project = Project.short_form().with_caption_renderer(renderer)
+    assert project.caption_renderer is renderer
+
+
+def test_script_accepts_a_custom_parser() -> None:
+    class FixedParser:
+        def parse(self, source: str) -> Script:
+            return Script(utterances=[])
+
+    project = Project.short_form().script("anything", parser=FixedParser())
+    assert project.script_data is not None
+    assert project.script_data.utterances == []
