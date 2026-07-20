@@ -1,3 +1,9 @@
+---
+layout: default
+title: Recipes
+nav_order: 4
+---
+
 # Recipes
 
 These recipes are complete starting points for common vertical-video formats. Copy a recipe into a
@@ -44,7 +50,7 @@ project.overlay_image("assets/reaction.png", during="hook", animation="bounce")
 ```
 
 For synthesized speech instead, register the speaker with a voice provider and omit `audio=`. See
-the [README](../README.md#captions-and-voices) for Chatterbox and Kokoro setup.
+[captions and voices](guides/captions-and-voices.md) for Chatterbox and Kokoro setup.
 
 ## Ranked countdown
 
@@ -142,5 +148,5 @@ reuse.
 | Fast list or ranking | Ranked countdown | Give every clip a stable `clip_id` and use `during_clip`. |
 | Find raw moments before editing | YouTube highlights | Choose `hybrid`, then review exported candidates before publishing. |
 
-For the full API surface, selectors, caption themes, and render contract, return to the
-[README](../README.md). For responsibilities inside the package, see the [project guide](index.md).
+For selectors, caption themes, and the render contract, see the [guides](guides/index.md) and
+[reference](reference/index.md). For responsibilities inside the package, see the [project guide](index.md).

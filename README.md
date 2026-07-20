@@ -10,7 +10,7 @@ The encoder is also given an 8 Mbps minimum rate target.
 
 ## Project map
 
-- [Project guide](docs/index.md) maps the public API, internal modules, tests, and documentation.
+- [Documentation home](docs/index.md) is the GitHub Pages-friendly guide to installation, API workflows, and references.
 - [Recipes](docs/examples.md) provides copyable projects for narration, rankings, and clip discovery.
 - [Architecture](docs/architecture.md) explains the render pipeline and extension boundaries.
 - [Contributing](CONTRIBUTING.md) lists the development workflow and validation gates.
