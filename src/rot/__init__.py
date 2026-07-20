@@ -5,8 +5,11 @@ from .clips import (
     ClipCandidate,
     ClipDetectionSettings,
     ClipSearchResult,
+    FolderClipFinder,
+    SkippedSource,
     VideoClipFinder,
     YouTubeClipFinder,
+    discover_videos,
 )
 from .effects import BuiltinEffect
 from .errors import (
@@ -65,6 +68,7 @@ __all__ = [
     "Effect",
     "EffectSpec",
     "FilterNode",
+    "FolderClipFinder",
     "KokoroVoice",
     "MediaInfo",
     "Overlay",
@@ -80,6 +84,7 @@ __all__ = [
     "RotScriptParser",
     "Script",
     "ScriptError",
+    "SkippedSource",
     "Speaker",
     "StableTSAligner",
     "SynthesizedAudio",
@@ -91,6 +96,7 @@ __all__ = [
     "WordAligner",
     "WordTiming",
     "YouTubeClipFinder",
+    "discover_videos",
 ]
 
 __version__ = "0.1.0"

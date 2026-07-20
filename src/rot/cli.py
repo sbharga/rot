@@ -8,13 +8,19 @@ import json
 import logging
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table
 
-from .clips import ClipDetectionSettings, YouTubeClipFinder
-from .errors import RotError
+from .clips import (
+    ClipDetectionSettings,
+    FolderClipFinder,
+    VideoClipFinder,
+    YouTubeClipFinder,
+)
+from .errors import ConfigurationError, RotError
 from .integrations import OpenRouterParser
 from .probe import doctor, probe
 from .project import Project
@@ -48,17 +54,28 @@ def _parser() -> argparse.ArgumentParser:
     parse_command.add_argument("--model", required=True)
     parse_command.add_argument("--speaker", action="append", default=[])
 
-    clips = commands.add_parser("clips", help="Download a YouTube video and find its best clips")
-    clips.add_argument("url")
+    clips = commands.add_parser(
+        "clips", help="Find the best clips in a YouTube video, local file, or folder"
+    )
+    clips.add_argument("target", metavar="TARGET", help="YouTube URL, video file, or folder")
     clips.add_argument("-o", "--output-dir", default="youtube-clips")
-    clips.add_argument("--method", choices=("hybrid", "scene", "audio"), default="hybrid")
+    clips.add_argument("--method", choices=("hybrid", "scene", "motion", "audio"), default="hybrid")
     clips.add_argument("--duration", type=float, default=30.0)
     clips.add_argument("--count", type=int, default=5)
     clips.add_argument("--scene-threshold", type=float, default=0.30)
     clips.add_argument("--max-overlap", type=float, default=0.20)
+    clips.add_argument("--scene-weight", type=float, default=0.35)
+    clips.add_argument("--motion-weight", type=float, default=0.20)
+    clips.add_argument("--audio-weight", type=float, default=0.45)
+    clips.add_argument("--no-snap", action="store_true")
+    clips.add_argument("--no-cache", action="store_true")
+    clips.add_argument("--no-recursive", action="store_true")
+    clips.add_argument("--max-per-source", type=int)
     clips.add_argument("--download-only", action="store_true")
     clips.add_argument("--json", action="store_true")
-    clips.add_argument("-f", "--force", action="store_true")
+    clips.add_argument("--overwrite-downloads", action="store_true")
+    clips.add_argument("--overwrite-exports", action="store_true")
+    clips.add_argument("-f", "--force", action="store_true", help="Overwrite downloads and exports")
     return parser
 
 
@@ -194,6 +211,18 @@ def _parse(args: argparse.Namespace) -> int:
     return 0
 
 
+def _clip_target(target: str) -> tuple[str, str | Path]:
+    """Classify a clips TARGET as a YouTube URL, a local folder, or a local file."""
+    if urlparse(target).scheme in {"http", "https"}:
+        return "youtube", target
+    path = Path(target).expanduser()
+    if path.is_dir():
+        return "folder", path
+    if path.is_file():
+        return "file", path
+    raise ConfigurationError(f"Not a URL, video file, or folder: {target}")
+
+
 def _clips(args: argparse.Namespace) -> int:
     settings = ClipDetectionSettings(
         method=args.method,
@@ -201,46 +230,95 @@ def _clips(args: argparse.Namespace) -> int:
         clip_count=args.count,
         scene_threshold=args.scene_threshold,
         max_overlap_ratio=args.max_overlap,
+        scene_weight=args.scene_weight,
+        motion_weight=args.motion_weight,
+        audio_weight=args.audio_weight,
+        snap=not args.no_snap,
+        max_per_source=args.max_per_source,
     )
-    result = YouTubeClipFinder(settings).find(
-        args.url,
-        args.output_dir,
-        export=not args.download_only,
-        overwrite=args.force,
-    )
+    kind, target = _clip_target(args.target)
+    cache = not args.no_cache
+    export = not args.download_only
+    if kind != "youtube" and args.download_only:
+        raise ConfigurationError("--download-only only applies to YouTube URLs")
+
+    if kind == "youtube":
+        result = YouTubeClipFinder(settings, cache=cache).find(
+            str(target),
+            args.output_dir,
+            export=export,
+            overwrite_download=args.force or args.overwrite_downloads,
+            overwrite_exports=args.force or args.overwrite_exports,
+            progress=True,
+        )
+    elif kind == "folder":
+        result = FolderClipFinder(settings, cache=cache).find(
+            target,
+            args.output_dir,
+            overwrite=args.force or args.overwrite_exports,
+            progress=True,
+            recursive=not args.no_recursive,
+        )
+    else:
+        result = VideoClipFinder(settings, cache=cache).find(
+            target,
+            args.output_dir,
+            overwrite=args.force or args.overwrite_exports,
+            progress=True,
+        )
     values = [
         {
             "rank": index,
+            "source": str(candidate.source),
             "start": candidate.start,
             "end": candidate.end,
             "score": candidate.score,
             "scene_score": candidate.scene_score,
+            "motion_score": candidate.motion_score,
             "audio_score": candidate.audio_score,
             "output": str(result.exports[index - 1]) if result.exports else None,
         }
         for index, candidate in enumerate(result.candidates, start=1)
     ]
     if args.json:
-        console.print_json(data={"source": str(result.source), "clips": values})
+        console.print_json(
+            data={
+                "sources": [str(path) for path in result.sources],
+                "clips": values,
+                "skipped": [
+                    {"path": str(item.path), "reason": item.reason} for item in result.skipped
+                ],
+                "warnings": list(result.warnings),
+            }
+        )
     else:
-        console.print(f"[bold green]Downloaded[/] {result.source}")
+        if len(result.sources) == 1:
+            console.print(f"[bold green]Analyzed[/] {result.sources[0]}")
+        else:
+            console.print(f"[bold green]Analyzed[/] {len(result.sources)} sources")
         table = Table(title="Suggested clips")
         table.add_column("Rank")
+        table.add_column("Source")
         table.add_column("Time")
         table.add_column("Score")
         table.add_column("Scene")
+        table.add_column("Motion")
         table.add_column("Audio")
         table.add_column("Output")
         for value in values:
             table.add_row(
                 str(value["rank"]),
+                Path(str(value["source"])).name,
                 f'{value["start"]:.2f}s–{value["end"]:.2f}s',
                 f'{value["score"]:.3f}',
                 f'{value["scene_score"]:.3f}',
+                f'{value["motion_score"]:.3f}',
                 f'{value["audio_score"]:.3f}',
                 str(value["output"] or "not exported"),
             )
         console.print(table)
+        for warning in result.warnings:
+            console.print(f"[yellow]{warning}[/]")
     return 0
 
 
