@@ -24,8 +24,16 @@ Render outputs are first written beside the destination under a unique temporary
 atomically after FFmpeg succeeds. Speech cache keys include provider configuration, language, and
 text. API keys and remote script bodies are not logged.
 
-`VideoClipFinder` is a preprocessing boundary rather than part of rendering. It asks FFmpeg for
-scene-change and windowed RMS-audio metadata, scores candidate time ranges in Python, and can
-accurately encode selected segments back to MP4. `YouTubeClipFinder` adds an explicit yt-dlp
-download step through the optional `youtube` extra. Downloaded videos never enter a `Project`
-implicitly; candidates can be exported or converted to ordinary trim-aware `Clip` models.
+`VideoClipFinder` is a preprocessing boundary rather than part of rendering. A single FFmpeg pass
+writes scene-change, motion, and windowed RMS-audio metadata to separate files — separate files
+rather than one stderr stream, because interleaved output would corrupt the timestamp-to-value
+pairing. Those signals become `SignalSeries` values whose prefix sums and sparse tables make each
+candidate window O(1) to score, and they are cached on disk keyed by file identity plus the
+settings that affect decoding, so re-ranking never re-decodes. Selected segments can then be
+accurately encoded back to MP4 under deterministic, source-derived names.
+
+`FolderClipFinder` ranks across a whole library, reducing each file to its own best windows before
+they compete globally and collecting unreadable sources as `SkippedSource` rather than failing the
+scan. `YouTubeClipFinder` adds an explicit yt-dlp download step through the optional `youtube`
+extra. Downloaded videos never enter a `Project` implicitly; candidates can be exported or
+converted to ordinary trim-aware `Clip` models.

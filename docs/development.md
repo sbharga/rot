@@ -20,6 +20,3 @@ uv run twine check dist/*
 Use `uv run rot doctor` to verify the media stack. Unit tests cover timeline and filter logic;
 small integration tests generate synthetic media during the test run instead of storing binary
 fixtures in the repository.
-
-See the repository’s `CONTRIBUTING.md` for contribution policy and `CHANGELOG.md` for user-facing
-changes.

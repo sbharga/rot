@@ -13,8 +13,6 @@ The encoder is also given an 8 Mbps minimum rate target.
 - [Documentation home](docs/index.md) is the GitHub Pages-friendly guide to installation, API workflows, and references.
 - [Recipes](docs/examples.md) provides copyable projects for narration, rankings, and clip discovery.
 - [Architecture](docs/architecture.md) explains the render pipeline and extension boundaries.
-- [Contributing](CONTRIBUTING.md) lists the development workflow and validation gates.
-- [Changelog](CHANGELOG.md) records user-facing changes.
 
 ## Requirements
 
@@ -198,20 +196,36 @@ parser = OpenRouterParser(model="provider/model", speakers=("alex", "sam"))
 project.script(free_form_text, parser=parser)
 ```
 
-## YouTube clip discovery
+## Clip discovery
 
-Install the `youtube` extra, then download a video and export ranked MP4 segments:
+`rot clips TARGET` ranks the strongest short-form windows in a YouTube URL, a local video file, or
+a whole folder of existing footage.
 
 ```console
+# A permitted YouTube source (needs the `youtube` extra).
 uv run rot clips "https://www.youtube.com/watch?v=VIDEO_ID" \
   --method hybrid --duration 30 --count 5 -o clips
+
+# A local file, or a library ranked across every video in it.
+uv run rot clips ./recording.mp4 --duration 20 --count 4 -o clips
+uv run rot clips ./gameplay-archive --duration 15 --count 8 --max-per-source 2 -o clips
 ```
 
-`hybrid` is the recommended default. It combines visual scene-change strength with short-window
-RMS audio energy, then rejects heavily overlapping results. Use `--method scene` for edited
-montages or silent footage, and `--method audio` for podcasts, interviews, and reactions where
+Folder scans recurse by default, report unreadable files instead of aborting, and cache extracted
+signals on disk so re-running with a different `--count` or `--duration` re-ranks without decoding
+again (`--no-cache` to force a fresh pass).
+
+`hybrid` is the recommended default. It combines visual scene-change strength, frame-to-frame
+motion, and short-window RMS audio energy, then rejects heavily overlapping results. Use
+`--method scene` for edited montages, `--method motion` for gameplay and action footage that moves
+constantly without hard cuts, and `--method audio` for podcasts, interviews, and reactions where
 energetic speech matters more than cuts. `--download-only` keeps `source.mp4` and reports the
 suggested time ranges without exporting them.
+
+Ranking is tunable end to end. `--scene-weight`, `--motion-weight`, and `--audio-weight` set the
+hybrid blend, and every normalization constant is a documented `ClipDetectionSettings` field.
+Selected clips snap to a nearby cut or audio trough so they do not begin mid-sentence; pass
+`--no-snap` to keep the raw ranked ranges.
 
 The same workflow is available as typed Python APIs:
 
@@ -228,6 +242,12 @@ result = finder.find(
 
 # Candidates also become trim-aware rot Clip objects without another encode.
 project = Project.short_form().background(result.project_clips()[0])
+
+# Each candidate carries the source it came from and its per-signal breakdown.
+for candidate in result.candidates:
+    print(candidate.source.name, candidate.start, candidate.scene_score, candidate.motion_score)
+for warning in result.warnings:
+    print(warning)
 ```
 
 The exported clips preserve the source dimensions but are accurately cut and encoded as H.264,

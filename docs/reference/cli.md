@@ -16,7 +16,7 @@ draft with OpenRouter, and finds source highlights.
 | `rot doctor` | Verify FFmpeg, FFprobe, libass, H.264, AAC, and optional integrations. |
 | `rot probe ASSET [--json]` | Print duration, streams, codecs, dimensions, and color metadata. |
 | `rot parse INPUT --model MODEL --speaker NAME` | Convert a free-form draft to a validated `.rot` script. |
-| `rot clips URL [options]` | Download a permitted YouTube source and export suggested clips. |
+| `rot clips TARGET [options]` | Rank and export clips from a YouTube URL, a video file, or a folder. |
 
 Use `-v` for diagnostic logs, `-vv` for source locations in tracebacks, and `--json-logs` for
 machine-readable logging. The renderer shows progress by default; pass `--no-progress` for

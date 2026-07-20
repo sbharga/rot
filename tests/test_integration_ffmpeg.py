@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from rot import ClipDetectionSettings, Project, RenderSettings, VideoClipFinder
+from rot import (
+    ClipDetectionSettings,
+    FolderClipFinder,
+    Project,
+    RenderSettings,
+    VideoClipFinder,
+)
+from rot.clips import _MOTION_RE, _SCENE_RE, SignalSeries, _parse_signal_output
 from rot.probe import doctor, executable, probe
 
 pytestmark = pytest.mark.skipif(not doctor().healthy, reason="full FFmpeg toolchain unavailable")
@@ -119,7 +126,7 @@ def test_real_hybrid_clip_discovery_and_export(tmp_path: Path) -> None:
             "-f",
             "lavfi",
             "-i",
-            "color=c=blue:s=320x180:r=30:d=2",
+            "testsrc2=s=320x180:r=30:d=2",
             "-f",
             "lavfi",
             "-i",
@@ -164,14 +171,129 @@ def test_real_hybrid_clip_discovery_and_export(tmp_path: Path) -> None:
     candidates = finder.analyze(source)
     assert candidates[0].start <= 2.5 < candidates[0].end
     assert candidates[0].audio_score > candidates[1].audio_score
+    # The middle segment is testsrc2, so the winning window carries real frame-to-frame motion.
+    assert candidates[0].motion_score > 0
+    assert candidates[0].source == source
 
-    output = finder.export(source, candidates[:1], tmp_path / "clips")[0]
+    output = finder.export(candidates[:1], tmp_path / "clips")[0]
     output_info = probe(output)
     assert output_info.duration == pytest.approx(2, abs=0.08)
     assert output_info.video_codec == "h264"
     assert output_info.audio_codec == "aac"
     assert output_info.sample_rate == 48_000
     assert output_info.channels == 2
+
+
+def _make_clip(path: Path, *, video: str, audio: str | None = None) -> Path:
+    command = [executable("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y"]
+    command += ["-f", "lavfi", "-i", video]
+    if audio is not None:
+        command += ["-f", "lavfi", "-i", audio]
+    command += ["-c:v", "libx264", "-pix_fmt", "yuv420p"]
+    if audio is not None:
+        command += ["-c:a", "aac"]
+    command.append(str(path))
+    subprocess.run(command, check=True)
+    return path
+
+
+def test_real_single_pass_matches_separate_passes(tmp_path: Path) -> None:
+    """The merged filter graph must produce the same signals as independent passes.
+
+    The merged graph is the riskiest part of extraction: split, several metadata sinks, and a
+    mapped null output behave differently across FFmpeg builds, and a silently empty signal
+    file would yield plausible-looking but meaningless rankings.
+    """
+    ffmpeg = executable("ffmpeg")
+    source = _make_clip(
+        tmp_path / "source.mp4",
+        video="testsrc2=s=320x180:r=30:d=4",
+        audio="sine=frequency=440:sample_rate=48000:duration=4",
+    )
+    finder = VideoClipFinder(ClipDetectionSettings(method="hybrid"), cache=False)
+    info = probe(source)
+    merged = finder._decode_signals(source, info)
+
+    # Independent, single-signal passes of the kind this replaced.
+    scene_file = tmp_path / "scene.txt"
+    motion_file = tmp_path / "motion.txt"
+    subprocess.run(
+        [
+            ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
+            "-vf",
+            f"scale=320:-2,select=gt(scene\\,{finder.settings.scene_threshold}),"
+            f"metadata=print:key=lavfi.scene_score:file={scene_file}",
+            "-an", "-f", "null", "-",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
+            "-vf",
+            f"scale=320:-2,fps={finder.settings.motion_fps},signalstats,"
+            f"metadata=print:key=lavfi.signalstats.YDIF:file={motion_file}",
+            "-an", "-f", "null", "-",
+        ],
+        check=True,
+    )
+    separate_scene = SignalSeries.from_events(
+        _parse_signal_output(scene_file.read_text(), _SCENE_RE)
+    )
+    separate_motion = SignalSeries.from_events(
+        (time, min(1.0, max(0.0, value / finder.settings.motion_reference)))
+        for time, value in _parse_signal_output(motion_file.read_text(), _MOTION_RE)
+    )
+
+    assert len(merged.motion) > 0
+    assert len(merged.audio) > 0
+    assert merged.scene.times == separate_scene.times
+    assert merged.motion.times == separate_motion.times
+    for merged_value, separate_value in zip(
+        merged.motion.values, separate_motion.values, strict=True
+    ):
+        assert merged_value == pytest.approx(separate_value, abs=1e-6)
+
+
+def test_real_folder_discovery_ranks_across_two_sources(tmp_path: Path) -> None:
+    library = tmp_path / "library"
+    (library / "nested").mkdir(parents=True)
+    busy = _make_clip(
+        library / "busy.mp4",
+        video="testsrc2=s=320x180:r=30:d=6",
+        audio="sine=frequency=440:sample_rate=48000:duration=6,volume=0.9",
+    )
+    calm = _make_clip(
+        library / "nested" / "calm.mp4",
+        video="color=c=gray:s=320x180:r=30:d=6",
+        audio="sine=frequency=200:sample_rate=48000:duration=6,volume=0.01",
+    )
+    # A file that looks like a video but is not, plus an unrelated extension.
+    (library / "broken.mp4").write_text("not a video")
+    (library / "notes.txt").write_text("ignored")
+
+    finder = FolderClipFinder(
+        ClipDetectionSettings(clip_duration=2, clip_count=3, max_overlap_ratio=0.1),
+        cache=False,
+    )
+    result = finder.find(library, tmp_path / "exports")
+
+    assert set(result.sources) == {busy, calm}
+    assert result.candidates[0].source == busy
+    # The unreadable file is reported, not fatal; the .txt is filtered out before probing.
+    assert [item.path for item in result.skipped] == [library / "broken.mp4"]
+    assert all(path.exists() for path in result.exports)
+
+
+def test_real_export_filename_is_deterministic(tmp_path: Path) -> None:
+    source = _make_clip(tmp_path / "source.mp4", video="testsrc2=s=320x180:r=30:d=4")
+    finder = VideoClipFinder(
+        ClipDetectionSettings(clip_duration=2, clip_count=1, motion_weight=0), cache=False
+    )
+    candidates = finder.analyze(source)
+    first = finder.export(candidates[:1], tmp_path / "exports")
+    second = finder.export(candidates[:1], tmp_path / "exports", overwrite=True)
+    assert first == second
 
 
 def test_real_join_transition_overlay_and_effect(tmp_path: Path) -> None:

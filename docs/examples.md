@@ -115,8 +115,8 @@ uv sync --extra youtube
 ```
 
 The command below downloads a permitted source, scores candidate windows, and exports five
-30-second MP4 clips. `hybrid` combines scene changes with audio energy and is the recommended
-starting point for edited, energetic footage.
+30-second MP4 clips. `hybrid` combines scene changes, frame-to-frame motion, and audio energy, and
+is the recommended starting point for edited, energetic footage.
 
 ```console
 uv run rot clips "https://www.youtube.com/watch?v=VIDEO_ID" \
@@ -134,6 +134,14 @@ finder = YouTubeClipFinder(
 result = finder.find("https://youtu.be/VIDEO_ID", "build/youtube-clips")
 
 project = Project.short_form().background(result.project_clips()[0])
+
+# Inspect why each window ranked where it did.
+for candidate in result.candidates:
+    print(
+        f"{candidate.start:.1f}s-{candidate.end:.1f}s "
+        f"score={candidate.score:.3f} scene={candidate.scene_score:.3f} "
+        f"motion={candidate.motion_score:.3f} audio={candidate.audio_score:.3f}"
+    )
 ```
 
 Use `--download-only` to inspect suggested ranges before exporting. Availability restrictions and
