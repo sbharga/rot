@@ -1,3 +1,9 @@
+---
+layout: default
+title: Architecture
+nav_order: 5
+---
+
 # Architecture
 
 `Project` is the user-facing builder. It owns a typed background track, speakers, dialogue,
