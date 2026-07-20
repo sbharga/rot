@@ -1,0 +1,96 @@
+"""rot: high-performance short-form video creation."""
+
+from .captions import AssCaptionRenderer
+from .clips import (
+    ClipCandidate,
+    ClipDetectionSettings,
+    ClipSearchResult,
+    VideoClipFinder,
+    YouTubeClipFinder,
+)
+from .effects import BuiltinEffect
+from .errors import (
+    AlignmentError,
+    ClipAnalysisError,
+    ConfigurationError,
+    DependencyError,
+    DownloadError,
+    ParserError,
+    ProbeError,
+    RenderError,
+    RotError,
+    ScriptError,
+    VoiceError,
+)
+from .integrations import ChatterboxVoice, KokoroVoice, OpenRouterParser, StableTSAligner
+from .models import (
+    CaptionRenderer,
+    CaptionTheme,
+    Clip,
+    Effect,
+    EffectSpec,
+    FilterNode,
+    MediaInfo,
+    Overlay,
+    ProgressEvent,
+    RenderResult,
+    RenderSettings,
+    Script,
+    Speaker,
+    SynthesizedAudio,
+    TextOverlay,
+    Utterance,
+    VoiceProvider,
+    WordAligner,
+    WordTiming,
+)
+from .project import Project
+from .script import RotScriptParser
+
+__all__ = [
+    "AlignmentError",
+    "AssCaptionRenderer",
+    "BuiltinEffect",
+    "CaptionRenderer",
+    "CaptionTheme",
+    "ChatterboxVoice",
+    "Clip",
+    "ClipAnalysisError",
+    "ClipCandidate",
+    "ClipDetectionSettings",
+    "ClipSearchResult",
+    "ConfigurationError",
+    "DependencyError",
+    "DownloadError",
+    "Effect",
+    "EffectSpec",
+    "FilterNode",
+    "KokoroVoice",
+    "MediaInfo",
+    "Overlay",
+    "OpenRouterParser",
+    "ParserError",
+    "ProbeError",
+    "ProgressEvent",
+    "Project",
+    "RenderError",
+    "RenderResult",
+    "RenderSettings",
+    "RotError",
+    "RotScriptParser",
+    "Script",
+    "ScriptError",
+    "Speaker",
+    "StableTSAligner",
+    "SynthesizedAudio",
+    "TextOverlay",
+    "Utterance",
+    "VideoClipFinder",
+    "VoiceError",
+    "VoiceProvider",
+    "WordAligner",
+    "WordTiming",
+    "YouTubeClipFinder",
+]
+
+__version__ = "0.1.0"
