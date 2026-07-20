@@ -26,6 +26,7 @@ from .models import (
     TextOverlay,
     Utterance,
     WordTiming,
+    transition_overlap,
 )
 from .probe import probe
 from .progress import ProgressReporter
@@ -48,13 +49,11 @@ def _clip_timeline_intervals(
     cursor = 0.0
     for position, (clip, _, clip_duration) in enumerate(clips):
         starts.append(cursor)
-        overlap = 0.0
-        if position < len(clips) - 1 and clip.transition != "cut":
-            overlap = min(
-                clip.transition_duration,
-                clip_duration / 2,
-                clips[position + 1][2] / 2,
-            )
+        overlap = (
+            transition_overlap(clip, clip_duration, clips[position + 1][2])
+            if position < len(clips) - 1
+            else 0.0
+        )
         overlaps.append(overlap)
         cursor += clip_duration - overlap
     boundaries = [0.0]
@@ -245,13 +244,10 @@ class Renderer:
             clip_infos.append((clip, info, duration))
 
         visual_duration = sum(item[2] for item in clip_infos)
-        for position, (clip, _, _) in enumerate(clip_infos[:-1]):
-            if clip.transition != "cut":
-                visual_duration -= min(
-                    clip.transition_duration,
-                    clip_infos[position][2] / 2,
-                    clip_infos[position + 1][2] / 2,
-                )
+        for position, (clip, _, clip_duration) in enumerate(clip_infos[:-1]):
+            visual_duration -= transition_overlap(
+                clip, clip_duration, clip_infos[position + 1][2]
+            )
         duration = cursor if cursor > 0 else visual_duration
         if duration > visual_duration + 0.01:
             last_clip, last_info, last_duration = clip_infos[-1]

@@ -12,7 +12,15 @@ from typing import Any
 
 from .effects import BuiltinEffect
 from .errors import ConfigurationError, RenderError
-from .models import Clip, FilterNode, MediaInfo, Overlay, RenderSettings, Utterance
+from .models import (
+    Clip,
+    FilterNode,
+    MediaInfo,
+    Overlay,
+    RenderSettings,
+    Utterance,
+    transition_overlap,
+)
 from .probe import executable
 
 
@@ -344,10 +352,8 @@ class FFmpegCompiler:
         for position in range(1, len(video_labels)):
             previous_clip = media.clips[position - 1][0]
             transition = previous_clip.transition
-            duration = min(
-                previous_clip.transition_duration,
-                timeline_duration / 2,
-                clip_durations[position] / 2,
+            duration = transition_overlap(
+                previous_clip, clip_durations[position - 1], clip_durations[position]
             )
             result = f"vjoin{position}"
             if transition == "cut":
@@ -482,13 +488,11 @@ class FFmpegCompiler:
                     f"adelay={delay}|{delay}[{label}]"
                 )
                 audio_labels.append(label)
-            overlap = 0.0
-            if position < len(media.clips) - 1 and clip.transition != "cut":
-                overlap = min(
-                    clip.transition_duration,
-                    duration / 2,
-                    media.clips[position + 1][2] / 2,
-                )
+            overlap = (
+                transition_overlap(clip, duration, media.clips[position + 1][2])
+                if position < len(media.clips) - 1
+                else 0.0
+            )
             clip_cursor += duration - overlap
 
         if music_index is not None:

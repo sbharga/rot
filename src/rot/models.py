@@ -194,6 +194,25 @@ class Clip:
                 raise ConfigurationError("Clip id cannot be empty")
 
 
+def transition_overlap(clip: Clip, duration: float, next_duration: float) -> float:
+    """Return the seconds ``clip`` shares with the clip that follows it.
+
+    A transition consumes this many seconds from the tail of ``clip`` and the head of its
+    successor *simultaneously*, so the pair occupies ``duration + next_duration - overlap``
+    on the timeline. Each clip's own length caps the overlap at half, which guarantees that
+    the transitions on a clip's two ends can never together consume more than the clip
+    itself.
+
+    This is the single owner of the arithmetic. The visual layout, the audio delay cursor,
+    and the xfade offset must all derive from it; deriving any of them independently is how
+    the video track and the audio track drift apart.
+    """
+
+    if clip.transition == "cut":
+        return 0.0
+    return min(clip.transition_duration, duration / 2, next_duration / 2)
+
+
 @dataclass(slots=True)
 class Speaker:
     name: str
