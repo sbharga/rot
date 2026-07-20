@@ -11,6 +11,11 @@ Caption presets are `classic`, `pop`, `karaoke`, and `bounce`. Use a `CaptionThe
 font, color, outline, safe area, casing, and word grouping. `rot` writes ASS captions and burns
 them with libass. Set `RenderSettings(caption_sidecar=True)` to also emit SRT.
 
+The default `AssCaptionRenderer` can be replaced with any object implementing the `CaptionRenderer`
+protocol (a `render(path, utterances, theme, *, width, height)` method) via
+`project.with_caption_renderer(...)`, mirroring how `with_aligner(...)` swaps the word-timing
+source.
+
 Each dialogue line can use prerecorded audio with `audio=...`. Otherwise the speaker needs a
 `VoiceProvider`: `ChatterboxVoice`, `KokoroVoice`, or a custom provider implementing `synthesize`.
 `StableTSAligner` provides known-transcript word alignment. Without an aligner, `rot` estimates
@@ -57,3 +62,6 @@ project.script(free_form_text, parser=parser)
 ```
 
 Keep API keys out of source files and logs.
+
+`parser=` accepts any object implementing the `ScriptParser` protocol (a `parse(source) -> Script`
+method), so a custom parser for another script format can be passed the same way.
