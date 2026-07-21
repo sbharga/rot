@@ -6,7 +6,7 @@ import re
 import shlex
 from pathlib import Path
 
-from .errors import ScriptError
+from .errors import ConfigurationError, ScriptError
 from .models import Script, Utterance
 
 _LINE = re.compile(r"^@(?P<speaker>[A-Za-z0-9_.-]+)(?:\s+\[(?P<meta>.*)\])?\s*:\s*(?P<text>.+)$")
@@ -44,15 +44,18 @@ class RotScriptParser:
                 gap = float(metadata.get("gap", "0.15"))
             except ValueError as exc:
                 raise ScriptError(f"Line {number}: gap must be a number") from exc
-            utterances.append(
-                Utterance(
-                    speaker=match.group("speaker"),
-                    text=match.group("text"),
-                    id=line_id,
-                    audio=metadata.get("audio"),
-                    gap_after=gap,
+            try:
+                utterances.append(
+                    Utterance(
+                        speaker=match.group("speaker"),
+                        text=match.group("text"),
+                        id=line_id,
+                        audio=metadata.get("audio"),
+                        gap_after=gap,
+                    )
                 )
-            )
+            except ConfigurationError as exc:
+                raise ScriptError(f"Line {number}: {exc}") from exc
         if not utterances:
             raise ScriptError("The script contains no dialogue")
         return Script(utterances)

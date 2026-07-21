@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from math import isfinite
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -22,6 +23,192 @@ Anchor = Literal[
     "bottom-left",
     "bottom-right",
 ]
+
+_ANCHORS = {
+    "center",
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "top-left",
+    "top-right",
+    "bottom-left",
+    "bottom-right",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class Placement:
+    """A normalized point used to place an element on the output canvas.
+
+    Attributes:
+        x: Horizontal coordinate from 0 (left) through 1 (right).
+        y: Vertical coordinate from 0 (top) through 1 (bottom).
+        anchor: Point on the element attached to the coordinate.
+    """
+
+    x: float
+    y: float
+    anchor: Anchor = "center"
+
+    def __post_init__(self) -> None:
+        if not isfinite(self.x) or not isfinite(self.y) or not 0 <= self.x <= 1 or not 0 <= self.y <= 1:
+            raise ConfigurationError("Placement coordinates must be between 0 and 1")
+        if self.anchor not in _ANCHORS:
+            raise ConfigurationError(f"Unknown placement anchor {self.anchor!r}")
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedRect:
+    """A rectangle expressed as fractions of a source or output frame.
+
+    Attributes:
+        x: Left edge from 0 through 1.
+        y: Top edge from 0 through 1.
+        width: Positive width that remains inside the frame.
+        height: Positive height that remains inside the frame.
+    """
+
+    x: float
+    y: float
+    width: float
+    height: float
+
+    def __post_init__(self) -> None:
+        values = (self.x, self.y, self.width, self.height)
+        if not all(isfinite(value) for value in values):
+            raise ConfigurationError("Normalized rectangle values must be finite")
+        if self.x < 0 or self.y < 0 or self.width <= 0 or self.height <= 0:
+            raise ConfigurationError(
+                "Normalized rectangle x/y must be nonnegative and dimensions must be positive"
+            )
+        if self.x + self.width > 1 or self.y + self.height > 1:
+            raise ConfigurationError("Normalized rectangle must remain within the frame")
+
+
+@dataclass(frozen=True, slots=True)
+class Facecam:
+    """A crop extracted from a clip and placed back onto its output canvas.
+
+    Attributes:
+        crop: Normalized rectangle locating the facecam in the source frame.
+        destination: Normalized output rectangle filled by the facecam using cover fitting.
+    """
+
+    crop: NormalizedRect
+    destination: NormalizedRect
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.crop, NormalizedRect) or not isinstance(
+            self.destination, NormalizedRect
+        ):
+            raise ConfigurationError("Facecam crop and destination must be NormalizedRect values")
+
+
+@dataclass(frozen=True, slots=True)
+class _InlineStyle:
+    color: str | None = None
+    bold: bool | None = None
+    italic: bool | None = None
+    underline: bool | None = None
+    font: str | None = None
+    font_size: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _TextRun:
+    text: str
+    style: _InlineStyle
+
+
+def _normalize_inline_color(value: str) -> str:
+    source = value.removeprefix("#")
+    if len(source) == 3 and all(char in "0123456789abcdefABCDEF" for char in source):
+        source = "".join(char * 2 for char in source)
+    if len(source) != 6 or any(char not in "0123456789abcdefABCDEF" for char in source):
+        raise ConfigurationError("Inline text color must use #RGB or #RRGGBB format")
+    return f"#{source.upper()}"
+
+
+def _parse_inline_text(value: str) -> tuple[str, tuple[_TextRun, ...]]:
+    """Parse the deliberately small, safe BBCode subset used by rendered text."""
+
+    source = value.strip()
+    runs: list[_TextRun] = []
+    buffer: list[str] = []
+    style = _InlineStyle()
+    stack: list[tuple[str, _InlineStyle]] = []
+
+    def flush() -> None:
+        if buffer:
+            runs.append(_TextRun("".join(buffer), style))
+            buffer.clear()
+
+    index = 0
+    while index < len(source):
+        if source.startswith("[[", index):
+            buffer.append("[")
+            index += 2
+            continue
+        if source.startswith("]]", index):
+            buffer.append("]")
+            index += 2
+            continue
+        if source[index] != "[":
+            buffer.append(source[index])
+            index += 1
+            continue
+        end = source.find("]", index + 1)
+        if end < 0:
+            raise ConfigurationError("Inline text contains an unclosed tag")
+        token = source[index + 1 : end]
+        if not token:
+            raise ConfigurationError("Inline text contains an empty tag")
+        flush()
+        if token.startswith("/"):
+            name = token[1:]
+            if not stack or stack[-1][0] != name:
+                raise ConfigurationError(f"Inline text has mismatched closing tag {token!r}")
+            _, style = stack.pop()
+        else:
+            name, separator, raw = token.partition("=")
+            previous = style
+            if name == "b" and not separator:
+                style = _InlineStyle(style.color, True, style.italic, style.underline, style.font, style.font_size)
+            elif name == "i" and not separator:
+                style = _InlineStyle(style.color, style.bold, True, style.underline, style.font, style.font_size)
+            elif name == "u" and not separator:
+                style = _InlineStyle(style.color, style.bold, style.italic, True, style.font, style.font_size)
+            elif name == "color" and separator:
+                style = _InlineStyle(_normalize_inline_color(raw), style.bold, style.italic, style.underline, style.font, style.font_size)
+            elif name == "font" and separator:
+                font = raw.strip()
+                if not font or any(char in font for char in ",\\{}[]\r\n"):
+                    raise ConfigurationError("Inline text font contains unsupported characters")
+                style = _InlineStyle(style.color, style.bold, style.italic, style.underline, font, style.font_size)
+            elif name == "size" and separator:
+                try:
+                    font_size = int(raw)
+                except ValueError as exc:
+                    raise ConfigurationError("Inline text size must be a positive integer") from exc
+                if font_size <= 0:
+                    raise ConfigurationError("Inline text size must be a positive integer")
+                style = _InlineStyle(style.color, style.bold, style.italic, style.underline, style.font, font_size)
+            else:
+                raise ConfigurationError(f"Unknown inline text tag {token!r}")
+            stack.append((name, previous))
+        index = end + 1
+    flush()
+    if stack:
+        raise ConfigurationError(f"Inline text has unclosed tag {stack[-1][0]!r}")
+    plain = "".join(run.text for run in runs)
+    if not plain.strip():
+        raise ConfigurationError("Rendered text content cannot be empty")
+    return plain, tuple(runs)
+
+
+def _valid_position(value: Anchor | Placement) -> bool:
+    return isinstance(value, Placement) or value in _ANCHORS
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +255,106 @@ class WordTiming:
     def __post_init__(self) -> None:
         if self.start < 0 or self.end < self.start:
             raise ConfigurationError(f"Invalid word timing for {self.text!r}")
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptSegment:
+    """One timed speech-to-text segment using clip-local output time.
+
+    Attributes:
+        text: Plain transcribed text.
+        start: Segment start in seconds.
+        end: Segment end in seconds.
+        words: Optional word-level timings in the same time domain.
+    """
+
+    text: str
+    start: float
+    end: float
+    words: tuple[WordTiming, ...] = ()
+
+    def __post_init__(self) -> None:
+        text = self.text.strip()
+        if not text:
+            raise ConfigurationError("Transcript segment text cannot be empty")
+        object.__setattr__(self, "text", text)
+        if self.start < 0 or self.end <= self.start:
+            raise ConfigurationError("Transcript segment timing is invalid")
+        if any(word.start < self.start or word.end > self.end for word in self.words):
+            raise ConfigurationError("Transcript word timings must remain inside their segment")
+
+
+@dataclass(frozen=True, slots=True)
+class Transcript:
+    """Structured speech-to-text output for one non-looped clip pass.
+
+    Attributes:
+        segments: Ordered timed transcript segments.
+        language: Detected or requested language identifier when known.
+    """
+
+    segments: tuple[TranscriptSegment, ...] = ()
+    language: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.language is not None and not self.language.strip():
+            raise ConfigurationError("Transcript language cannot be empty")
+        previous_end = 0.0
+        for segment in self.segments:
+            if segment.start < previous_end:
+                raise ConfigurationError("Transcript segments must be ordered and non-overlapping")
+            previous_end = segment.end
+
+    @property
+    def text(self) -> str:
+        """Return segment text joined with spaces."""
+
+        return " ".join(segment.text for segment in self.segments)
+
+
+@dataclass(frozen=True, slots=True)
+class ClipTranscript:
+    """A transcript associated with one clip in a project.
+
+    Attributes:
+        clip_index: Zero-based project clip index.
+        clip_id: Optional stable clip identifier.
+        source: Resolved clip source path.
+        transcript: Clip-local transcript for one rendered source pass.
+    """
+
+    clip_index: int
+    clip_id: str | None
+    source: Path
+    transcript: Transcript
+
+    def __post_init__(self) -> None:
+        if self.clip_index < 0:
+            raise ConfigurationError("Transcript clip index cannot be negative")
+
+    @property
+    def text(self) -> str:
+        """Return the transcript's plain text."""
+
+        return self.transcript.text
+
+
+@dataclass(frozen=True, slots=True)
+class ClipTranscription:
+    """Per-clip speech-to-text options.
+
+    Attributes:
+        language: Optional language identifier; ``None`` enables provider detection.
+    """
+
+    language: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.language is not None:
+            language = self.language.strip()
+            if not language:
+                raise ConfigurationError("Transcription language cannot be empty")
+            object.__setattr__(self, "language", language)
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +412,28 @@ class WordAligner(Protocol):
             audio_path: Speech audio path.
             text: Known transcript.
             language: Transcript language identifier.
+            progress: Optional stage progress callback.
+        """
+
+        ...
+
+
+@runtime_checkable
+class Transcriber(Protocol):
+    """Interface for converting clip audio into timed text."""
+
+    def transcribe(
+        self,
+        audio_path: Path,
+        *,
+        language: str | None = None,
+        progress: StageProgressCallback | None = None,
+    ) -> Transcript:
+        """Transcribe one clip-local audio pass.
+
+        Args:
+            audio_path: Prepared audio path.
+            language: Optional language identifier or ``None`` for detection.
             progress: Optional stage progress callback.
         """
 
@@ -261,6 +570,10 @@ class Clip:
         fit_amount: Custom-fit interpolation from contain to cover.
         fill: ``black`` or ``blur`` letterbox fill.
         fill_blur: Blurred-fill strength.
+        facecam: Optional source crop and output destination for an extracted facecam.
+        focus: Optional normalized source point retained by cropping.
+        position: Optional normalized placement of the fitted foreground.
+        transcribe: Whether and how to transcribe this clip's audio.
     """
 
     source: Path | str
@@ -280,6 +593,10 @@ class Clip:
     fit_amount: float = 0.5
     fill: Fill = "black"
     fill_blur: float = 40.0
+    facecam: Facecam | None = None
+    focus: tuple[float, float] | None = None
+    position: Placement | None = None
+    transcribe: bool | ClipTranscription = False
 
     def __post_init__(self) -> None:
         self.source = Path(self.source)
@@ -311,6 +628,19 @@ class Clip:
             raise ConfigurationError("fill_blur must be positive")
         if self.fill == "blur" and self.fit not in {"contain", "custom"}:
             raise ConfigurationError("Blur fill requires fit='contain' or fit='custom'")
+        if self.facecam is not None and self.fit != "custom":
+            raise ConfigurationError("Facecam extraction requires fit='custom'")
+        if self.focus is not None:
+            if self.fit not in {"cover", "custom"}:
+                raise ConfigurationError("Clip focus requires fit='cover' or fit='custom'")
+            if len(self.focus) != 2 or not all(
+                isfinite(value) and 0 <= value <= 1 for value in self.focus
+            ):
+                raise ConfigurationError("Clip focus coordinates must be between 0 and 1")
+        if self.position is not None and self.fit not in {"contain", "custom"}:
+            raise ConfigurationError("Clip position requires fit='contain' or fit='custom'")
+        if not isinstance(self.transcribe, (bool, ClipTranscription)):
+            raise ConfigurationError("Clip transcribe must be a boolean or ClipTranscription")
         if self.speed <= 0:
             raise ConfigurationError("speed must be positive")
         if self.volume < 0:
@@ -351,7 +681,7 @@ class Speaker:
         voice: Optional text-to-speech provider.
         portrait: Optional static portrait image.
         language: Provider language identifier.
-        portrait_position: Portrait canvas anchor.
+        portrait_position: Named canvas anchor or normalized placement.
         portrait_width: Portrait width in pixels.
         portrait_animation: Portrait entrance animation.
     """
@@ -360,7 +690,7 @@ class Speaker:
     voice: VoiceProvider | None = None
     portrait: Path | str | None = None
     language: str = "en"
-    portrait_position: Anchor = "bottom-right"
+    portrait_position: Anchor | Placement = "bottom-right"
     portrait_width: int = 420
     portrait_animation: str = "pop"
 
@@ -371,17 +701,7 @@ class Speaker:
             self.portrait = Path(self.portrait)
         if self.portrait_width <= 0:
             raise ConfigurationError("portrait_width must be positive")
-        if self.portrait_position not in {
-            "center",
-            "top",
-            "bottom",
-            "left",
-            "right",
-            "top-left",
-            "top-right",
-            "bottom-left",
-            "bottom-right",
-        }:
+        if not _valid_position(self.portrait_position):
             raise ConfigurationError(f"Unknown portrait position {self.portrait_position!r}")
         if self.portrait_animation not in {"none", "pop", "fade", "slide", "bounce"}:
             raise ConfigurationError(
@@ -402,6 +722,7 @@ class Utterance:
         start: Resolved absolute start time.
         end: Resolved absolute end time.
         words: Resolved word timings.
+        styled_runs: Parsed inline formatting runs used by the built-in caption renderer.
     """
 
     speaker: str
@@ -412,10 +733,13 @@ class Utterance:
     start: float | None = None
     end: float | None = None
     words: tuple[WordTiming, ...] = ()
+    styled_runs: tuple[_TextRun, ...] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self.text = self.text.strip()
-        if not self.speaker or not self.text:
+        text, runs = _parse_inline_text(self.text)
+        self.text = text
+        self.styled_runs = runs
+        if not self.speaker:
             raise ConfigurationError("Utterances require a speaker and text")
         if self.audio is not None:
             self.audio = Path(self.audio)
@@ -453,6 +777,7 @@ class CaptionTheme:
         outline_width: Outline thickness in pixels.
         shadow: Shadow depth in pixels.
         position_y: Baseline position in pixels.
+        position: Optional normalized canvas placement overriding ``position_y``.
         max_words: Maximum words displayed in one group.
         uppercase: Whether captions are uppercased.
     """
@@ -466,12 +791,15 @@ class CaptionTheme:
     outline_width: int = 7
     shadow: int = 2
     position_y: int = 1310
+    position: Placement | None = None
     max_words: int = 5
     uppercase: bool = False
 
     def __post_init__(self) -> None:
         if self.font_size <= 0 or self.max_words <= 0:
             raise ConfigurationError("Caption font_size and max_words must be positive")
+        if self.position is not None and not isinstance(self.position, Placement):
+            raise ConfigurationError("Caption position must be a Placement")
 
     @classmethod
     def preset(cls, name: str) -> CaptionTheme:
@@ -503,7 +831,7 @@ class Overlay:
         during: Optional dialogue line identifier.
         speaker: Optional speaker selector.
         during_clip: Optional clip ID or zero-based index.
-        position: Canvas anchor.
+        position: Named canvas anchor or normalized placement.
         width: Rendered width or the default 560 pixels.
         opacity: Alpha multiplier from 0 through 1.
         animation: Entrance/exit animation.
@@ -516,7 +844,7 @@ class Overlay:
     during: str | None = None
     speaker: str | None = None
     during_clip: int | str | None = None
-    position: Anchor = "center"
+    position: Anchor | Placement = "center"
     width: int | None = None
     opacity: float = 1.0
     animation: str = "pop"
@@ -546,17 +874,7 @@ class Overlay:
             self.during_clip = self.during_clip.strip()
             if not self.during_clip:
                 raise ConfigurationError("Overlay clip id cannot be empty")
-        if self.position not in {
-            "center",
-            "top",
-            "bottom",
-            "left",
-            "right",
-            "top-left",
-            "top-right",
-            "bottom-left",
-            "bottom-right",
-        }:
+        if not _valid_position(self.position):
             raise ConfigurationError(f"Unknown overlay position {self.position!r}")
         if self.width is not None and self.width <= 0:
             raise ConfigurationError("Overlay width must be positive")
@@ -617,7 +935,7 @@ class TextOverlay:
         during: Optional dialogue line identifier.
         speaker: Optional speaker selector.
         during_clip: Optional clip ID or zero-based index.
-        position: Canvas anchor.
+        position: Named canvas anchor or normalized placement.
         font: Fontconfig font family.
         font_size: Font size in pixels.
         color: Text color in ``#RRGGBB`` form.
@@ -629,6 +947,7 @@ class TextOverlay:
         margin_x: Horizontal safe-area margin.
         margin_y: Vertical safe-area margin.
         z_index: Ordering among text overlays.
+        styled_runs: Parsed inline formatting runs used by the built-in renderer.
     """
 
     text: str
@@ -637,7 +956,7 @@ class TextOverlay:
     during: str | None = None
     speaker: str | None = None
     during_clip: int | str | None = None
-    position: Anchor = "top"
+    position: Anchor | Placement = "top"
     font: str = "DejaVu Sans"
     font_size: int = 76
     color: str = "#FFFFFF"
@@ -649,12 +968,12 @@ class TextOverlay:
     margin_x: int = 70
     margin_y: int = 160
     z_index: int = 0
+    styled_runs: tuple[_TextRun, ...] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        text = self.text.strip()
-        if not text:
-            raise ConfigurationError("Text overlay content cannot be empty")
+        text, runs = _parse_inline_text(self.text)
         object.__setattr__(self, "text", text)
+        object.__setattr__(self, "styled_runs", runs)
         if self.at is not None and self.at < 0:
             raise ConfigurationError("Text overlay start cannot be negative")
         if self.duration is not None and self.duration <= 0:
@@ -684,17 +1003,7 @@ class TextOverlay:
             raise ConfigurationError("Text overlay margins cannot be negative")
         if not self.font.strip() or any(char in self.font for char in ",\r\n"):
             raise ConfigurationError("Text overlay font contains unsupported characters")
-        if self.position not in {
-            "center",
-            "top",
-            "bottom",
-            "left",
-            "right",
-            "top-left",
-            "top-right",
-            "bottom-left",
-            "bottom-right",
-        }:
+        if not _valid_position(self.position):
             raise ConfigurationError(f"Unknown text overlay position {self.position!r}")
         for name, value in (("color", self.color), ("outline_color", self.outline_color)):
             source = value.removeprefix("#")
@@ -762,12 +1071,14 @@ class RenderResult:
         duration: Output duration in seconds.
         warnings: Nonfatal render warnings.
         command: Executed FFmpeg argument vector.
+        transcripts: Clip transcripts used by the render.
     """
 
     output: Path
     duration: float
     warnings: tuple[str, ...] = ()
     command: tuple[str, ...] = ()
+    transcripts: tuple[ClipTranscript, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

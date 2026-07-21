@@ -2,7 +2,17 @@ from pathlib import Path
 
 import pytest
 
-from rot import Clip, MediaInfo, RenderSettings, Soundtrack, Utterance
+from rot import (
+    Clip,
+    Facecam,
+    MediaInfo,
+    NormalizedRect,
+    Overlay,
+    Placement,
+    RenderSettings,
+    Soundtrack,
+    Utterance,
+)
 from rot.ffmpeg import FFmpegCompiler, PreparedMedia
 from rot.render import _clip_timeline_intervals
 
@@ -151,6 +161,37 @@ def test_compiler_emits_custom_fit_between_contain_and_cover(
     assert "pad=1080:1920:x='0':y='0':color=black" in command
 
 
+def test_compiler_uses_exact_clip_focus_and_canvas_position(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("rot.ffmpeg.executable", lambda name: name)
+    path = tmp_path / "horizontal.mp4"
+    clip = Clip(
+        path,
+        duration=2,
+        fit="custom",
+        fit_amount=0.4,
+        focus=(0.8, 0.25),
+        position=Placement(0.5, 0.1, anchor="top"),
+    )
+    media = PreparedMedia(
+        clips=[(clip, MediaInfo(path, 2, 1920, 1080, True, False), 2)],
+        utterances=[],
+        overlays=[],
+        portraits=[],
+        duration=2,
+    )
+    command = " ".join(FFmpegCompiler(RenderSettings()).compile(media, tmp_path / "out.mp4"))
+    assert "x='min(max(iw*0.8-ow/2,0),iw-ow)'" in command
+    assert "y='min(max(ih*0.25-oh/2,0),ih-oh)'" in command
+    assert "min(max(oh*0.1,0),oh-ih)" in command
+
+    cover = Clip(path, duration=2, fit="cover", focus=(0.75, 0.5))
+    media.clips = [(cover, media.clips[0][1], 2)]
+    cover_command = " ".join(
+        FFmpegCompiler(RenderSettings()).compile(media, tmp_path / "cover.mp4")
+    )
+    assert "crop=w=1080:h=1920:x='min(max(iw*0.75-ow/2,0),iw-ow)'" in cover_command
+
+
 def test_compiler_builds_blurred_fill_behind_custom_fit(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("rot.ffmpeg.executable", lambda name: name)
     path = tmp_path / "horizontal.mp4"
@@ -176,3 +217,58 @@ def test_compiler_builds_blurred_fill_behind_custom_fit(monkeypatch, tmp_path: P
     assert "gblur=sigma=10:steps=2" in command
     assert "[vfillbg0][vfillfg0]overlay=x=(W-w)/2:y=(H-h)/2:shortest=1" in command
     assert "pad=1080:1920" not in command
+
+
+def test_compiler_extracts_and_places_facecam_from_custom_fit(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("rot.ffmpeg.executable", lambda name: name)
+    path = tmp_path / "stream.mp4"
+    clip = Clip(
+        path,
+        duration=2,
+        fit="custom",
+        fit_amount=0.25,
+        facecam=Facecam(
+            crop=NormalizedRect(0.05, 0.1, 0.25, 0.4),
+            destination=NormalizedRect(0.6, 0.65, 0.35, 0.3),
+        ),
+    )
+    media = PreparedMedia(
+        clips=[(clip, MediaInfo(path, 2, 1920, 1080, True, False), 2)],
+        utterances=[],
+        overlays=[],
+        portraits=[],
+        duration=2,
+    )
+    command = " ".join(FFmpegCompiler(RenderSettings()).compile(media, tmp_path / "out.mp4"))
+    assert "split=2[vsource0][vfacecamsource0]" in command
+    assert "trunc(iw*0.25/2)*2" in command
+    assert "trunc(ih*0.4/2)*2" in command
+    assert "scale=378:576:force_original_aspect_ratio=increase,crop=378:576" in command
+    assert "[vfitted0][vfacecam0]overlay=x=648:y=1248:shortest=1" in command
+
+    clip.fill = "blur"
+    blurred = " ".join(FFmpegCompiler(RenderSettings()).compile(media, tmp_path / "blurred.mp4"))
+    assert "split=3[vfillbgsource0][vfillfgsource0][vfacecamsource0]" in blurred
+    assert "[vfilled0][vfacecam0]overlay=x=648:y=1248:shortest=1" in blurred
+
+
+def test_compiler_resolves_normalized_image_placement(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("rot.ffmpeg.executable", lambda name: name)
+    background = tmp_path / "background.mp4"
+    image = tmp_path / "overlay.png"
+    overlay = Overlay(image, at=0, position=Placement(0.25, 0.5, anchor="center"))
+    media = PreparedMedia(
+        clips=[
+            (
+                Clip(background, duration=1),
+                MediaInfo(background, 1, 1080, 1920, True, False),
+                1,
+            )
+        ],
+        utterances=[],
+        overlays=[(overlay, ((0.0, 1.0),))],
+        portraits=[],
+        duration=1,
+    )
+    command = " ".join(FFmpegCompiler(RenderSettings()).compile(media, tmp_path / "out.mp4"))
+    assert "overlay=x=270-w/2:y=960-h/2" in command

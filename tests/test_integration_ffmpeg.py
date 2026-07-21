@@ -6,14 +6,22 @@ from pathlib import Path
 import pytest
 
 from rot import (
+    Clip,
     ClipDetectionSettings,
+    Facecam,
     FolderClipFinder,
+    NormalizedRect,
+    Placement,
     Project,
     RenderSettings,
+    Transcript,
+    TranscriptSegment,
     VideoClipFinder,
+    WordTiming,
 )
 from rot.clips import _MOTION_RE, _SCENE_RE, SignalSeries, _parse_signal_output
 from rot.probe import doctor, executable, probe
+from rot.transcription import transcribe_clip
 
 pytestmark = pytest.mark.skipif(not doctor().healthy, reason="full FFmpeg toolchain unavailable")
 
@@ -180,6 +188,259 @@ def test_real_still_overlay_and_ducked_soundtrack(tmp_path: Path) -> None:
     joined = " ".join(result.command)
     assert "aloop=loop=-1" in joined
     assert "sidechaincompress=" in joined
+
+
+def test_real_custom_fit_extracts_facecam_into_destination(tmp_path: Path) -> None:
+    ffmpeg = executable("ffmpeg")
+    source = tmp_path / "stream.mp4"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=320x180:r=30:d=1,drawbox=x=0:y=0:w=80:h=90:color=magenta:t=fill",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(source),
+        ],
+        check=True,
+    )
+    project = Project(
+        settings=RenderSettings(width=180, height=320, preset="ultrafast")
+    ).background(
+        source,
+        duration=1,
+        loop=False,
+        fit="custom",
+        fit_amount=0,
+        facecam=Facecam(
+            crop=NormalizedRect(0, 0, 0.25, 0.5),
+            destination=NormalizedRect(0, 0.7, 1, 0.3),
+        ),
+    )
+    result = project.render(tmp_path / "facecam.mp4", progress=False)
+    pixel = subprocess.run(
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-ss",
+            "0.5",
+            "-i",
+            str(result.output),
+            "-vf",
+            "crop=2:2:90:270,scale=1:1",
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "pipe:1",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+    assert len(pixel) == 3
+    assert pixel[0] > 150 and pixel[1] < 100 and pixel[2] > 150
+
+
+def test_real_transcription_audio_matches_trim_and_speed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ffmpeg = executable("ffmpeg")
+    source = tmp_path / "speech-source.mp4"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=320x180:r=30:d=4",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=4",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(source),
+        ],
+        check=True,
+    )
+    durations: list[float] = []
+
+    class ProbeTranscriber:
+        def transcribe(self, audio_path, *, language=None, progress=None):  # noqa: ANN001
+            durations.append(probe(Path(audio_path)).duration)
+            return Transcript()
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    clip = Clip(
+        source,
+        trim_start=1,
+        trim_end=3,
+        speed=2,
+        loop=False,
+        transcribe=True,
+    )
+    transcribe_clip(clip, probe(source), 0, ProbeTranscriber(), tmp_path)
+    assert durations == pytest.approx([1.0], abs=0.04)
+
+
+def test_real_render_burns_word_timed_clip_transcription(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ffmpeg = executable("ffmpeg")
+    source = tmp_path / "captioned-source.mp4"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=navy:s=320x180:r=30:d=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=1",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(source),
+        ],
+        check=True,
+    )
+
+    class TimedTranscriber:
+        def transcribe(self, audio_path, *, language=None, progress=None):  # noqa: ANN001
+            return Transcript(
+                (
+                    TranscriptSegment(
+                        "word timing",
+                        0.1,
+                        0.8,
+                        (
+                            WordTiming("word", 0.1, 0.4),
+                            WordTiming("timing", 0.4, 0.8),
+                        ),
+                    ),
+                ),
+                "en",
+            )
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    project = (
+        Project(
+            settings=RenderSettings(
+                width=180,
+                height=320,
+                preset="ultrafast",
+                caption_sidecar=True,
+            )
+        )
+        .background(source, loop=False, keep_audio=True, transcribe=True)
+        .with_transcriber(TimedTranscriber())
+    )
+    result = project.render(tmp_path / "captioned.mp4", progress=False)
+
+    assert result.transcripts[0].text == "word timing"
+    assert "clip-captions.ass" in " ".join(result.command)
+    sidecar = result.output.with_suffix(".srt").read_text(encoding="utf-8")
+    assert "00:00:00,100 --> 00:00:00,800" in sidecar
+    assert "word timing" in sidecar
+
+
+def test_real_exact_focus_and_canvas_position(tmp_path: Path) -> None:
+    ffmpeg = executable("ffmpeg")
+    source = tmp_path / "split.mp4"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=320x180:r=30:d=0.8,drawbox=x=160:y=0:w=160:h=180:color=blue:t=fill",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(source),
+        ],
+        check=True,
+    )
+    settings = RenderSettings(width=180, height=320, preset="ultrafast", captions=False)
+    focused = (
+        Project(settings=settings)
+        .background(source, loop=False, fit="cover", focus=(0.9, 0.5))
+        .render(tmp_path / "focused.mp4", progress=False)
+    )
+    positioned = (
+        Project(settings=settings)
+        .background(
+            source,
+            loop=False,
+            fit="contain",
+            position=Placement(0.5, 0.05, anchor="top"),
+        )
+        .render(tmp_path / "positioned.mp4", progress=False)
+    )
+
+    def pixel(path: Path, x: int, y: int) -> bytes:
+        return subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                "0.4",
+                "-i",
+                str(path),
+                "-vf",
+                f"crop=2:2:{x}:{y},scale=1:1",
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "pipe:1",
+            ],
+            check=True,
+            capture_output=True,
+        ).stdout
+
+    focused_center = pixel(focused.output, 90, 160)
+    positioned_top = pixel(positioned.output, 140, 30)
+    positioned_bottom = pixel(positioned.output, 90, 280)
+    assert focused_center[2] > 150 and focused_center[0] < 100
+    assert positioned_top[2] > 150
+    assert max(positioned_bottom) < 30
 
 
 def test_real_hybrid_clip_discovery_and_export(tmp_path: Path) -> None:

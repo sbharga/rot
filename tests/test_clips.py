@@ -16,8 +16,10 @@ from rot import (
     ClipDetectionSettings,
     ConfigurationError,
     DependencyError,
+    DownloadError,
     MediaInfo,
     ProbeError,
+    TwitchClipFinder,
     VideoClipFinder,
     YouTubeClipFinder,
     discover_videos,
@@ -31,6 +33,7 @@ from rot.clips import (
     _export_name,
     _overlap_ratio,
     _parse_signal_output,
+    _twitch_clip_id,
 )
 
 
@@ -560,6 +563,138 @@ def test_youtube_downloader_uses_mp4_template_and_rejects_other_hosts(
     assert captured["merge_output_format"] == "mp4"
     with pytest.raises(ConfigurationError, match="YouTube"):
         YouTubeClipFinder().download("https://example.com/video", tmp_path / "other.mp4")
+
+
+def test_twitch_clip_ids_are_parsed_from_supported_urls() -> None:
+    clip_id = "AwkwardHelplessSalamander-SwiftRage_1"
+    assert _twitch_clip_id(clip_id) == clip_id
+    assert _twitch_clip_id(f"https://clips.twitch.tv/{clip_id}") == clip_id
+    assert _twitch_clip_id(f"https://www.twitch.tv/twitchdev/clip/{clip_id}") == clip_id
+    assert _twitch_clip_id(f"https://clips.twitch.tv/embed?clip={clip_id}") == clip_id
+
+    for invalid in (
+        "https://example.com/clip/id",
+        "https://www.twitch.tv/twitchdev",
+        "https://clips.twitch.tv/one/two",
+        "bad/id",
+    ):
+        with pytest.raises(ConfigurationError, match="Twitch"):
+            _twitch_clip_id(invalid)
+
+
+def test_twitch_downloader_uses_official_api_and_writes_atomically(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[tuple[str, str, dict[str, object]]] = []
+    media_url = "https://production.assets.clips.twitchcdn.net/signed"
+
+    class _Response:
+        def __init__(self, status_code: int, payload: dict[str, object]) -> None:
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class _StreamResponse(_Response):
+        def __enter__(self) -> _StreamResponse:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def iter_bytes(self) -> tuple[bytes, ...]:
+            return (b"official-", b"clip")
+
+    class _HTTPError(Exception):
+        pass
+
+    class _HTTPX:
+        HTTPError = _HTTPError
+
+        @staticmethod
+        def get(url: str, **kwargs: object) -> _Response:
+            calls.append(("get", url, kwargs))
+            if url.endswith("/validate"):
+                return _Response(
+                    200,
+                    {
+                        "client_id": "client-id",
+                        "user_id": "editor-id",
+                        "scopes": ["editor:manage:clips"],
+                    },
+                )
+            if url.endswith("/clips"):
+                return _Response(200, {"data": [{"broadcaster_id": "broadcaster-id"}]})
+            return _Response(
+                200,
+                {
+                    "data": [
+                        {
+                            "clip_id": "ClipSlug",
+                            "landscape_download_url": media_url,
+                            "portrait_download_url": None,
+                        }
+                    ]
+                },
+            )
+
+        @staticmethod
+        def stream(method: str, url: str, **kwargs: object) -> _StreamResponse:
+            calls.append((method.lower(), url, kwargs))
+            return _StreamResponse(200, {})
+
+    monkeypatch.setattr("rot.clips._twitch_httpx", lambda: _HTTPX)
+    destination = tmp_path / "nested" / "source.mp4"
+    finder = TwitchClipFinder(client_id="client-id", access_token="secret-token")
+    output = finder.download("https://clips.twitch.tv/ClipSlug", destination)
+
+    assert output.read_bytes() == b"official-clip"
+    assert not list(destination.parent.glob(".source-*.mp4"))
+    validate_headers = calls[0][2]["headers"]
+    assert validate_headers == {"Authorization": "Bearer secret-token"}
+    assert calls[1][2]["params"] == {"id": "ClipSlug"}
+    assert calls[2][2]["params"] == {
+        "broadcaster_id": "broadcaster-id",
+        "editor_id": "editor-id",
+        "clip_id": "ClipSlug",
+    }
+    assert calls[3][1] == media_url
+
+
+def test_twitch_downloader_validates_credentials_scope_and_variant(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    with pytest.raises(ConfigurationError, match="client_id"):
+        TwitchClipFinder(client_id=" ", access_token="token")
+    with pytest.raises(ConfigurationError, match="access_token"):
+        TwitchClipFinder(client_id="client", access_token=" ")
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {"client_id": "client", "user_id": "editor", "scopes": []}
+
+    class _HTTPError(Exception):
+        pass
+
+    class _HTTPX:
+        HTTPError = _HTTPError
+
+        @staticmethod
+        def get(*args: object, **kwargs: object) -> _Response:
+            return _Response()
+
+    monkeypatch.setattr("rot.clips._twitch_httpx", lambda: _HTTPX)
+    finder = TwitchClipFinder(client_id="client", access_token="token")
+    with pytest.raises(DownloadError, match="manage:clips"):
+        finder.download("ClipSlug", tmp_path / "source.mp4")
+    with pytest.raises(ConfigurationError, match="variant"):
+        finder.download(
+            "ClipSlug", tmp_path / "source.mp4", variant="square"  # type: ignore[arg-type]
+        )
 
 
 def test_export_builds_accurate_h264_mp4_atomically(

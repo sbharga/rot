@@ -11,10 +11,61 @@ Caption presets are `classic`, `pop`, `karaoke`, and `bounce`. Use a `CaptionThe
 font, color, outline, safe area, casing, and word grouping. `rot` writes ASS captions and burns
 them with libass. Set `RenderSettings(caption_sidecar=True)` to also emit SRT.
 
+Use safe BBCode to change color and typography inline in dialogue or `overlay_text` content:
+
+```python
+project.script(
+    "@alex: This is [color=#FFE135][b]actually wild[/b][/color]."
+)
+project.overlay_text(
+    "[size=96]FINAL[/size] [i]ROUND[/i]",
+    during_clip="final",
+)
+```
+
+Supported tags are `color`, `b`, `i`, `u`, `font`, and `size`; they can be nested, and doubled
+brackets render literal brackets. Markup is validated and removed from speech, alignment, and SRT
+text. The active caption word uses the theme highlight color temporarily, while retaining its
+inline font, size, bold, italic, and underline formatting.
+
+Set `CaptionTheme(position=Placement(x, y, anchor=...))` for normalized two-dimensional caption
+placement. Without it, the existing `position_y` baseline remains unchanged.
+
 The default `AssCaptionRenderer` can be replaced with any object implementing the `CaptionRenderer`
 protocol (a `render(path, utterances, theme, *, width, height)` method) via
 `project.with_caption_renderer(...)`, mirroring how `with_aligner(...)` swaps the word-timing
 source.
+
+## Transcribe clip audio
+
+Clips can generate captions directly from their existing audio without becoming script dialogue:
+
+```python
+from rot import ClipTranscription, Placement, StableTSTranscriber
+
+project = (
+    Project.short_form()
+    .background("stream.mp4", keep_audio=True, transcribe=True)
+    .add_clip(
+        "interview.mp4",
+        keep_audio=True,
+        transcribe=ClipTranscription(language="en"),
+    )
+    .with_transcriber(StableTSTranscriber(model="base"))
+    .clip_captions("pop", position=Placement(0.5, 0.08, anchor="top"))
+)
+```
+
+Install the built-in provider with `uv sync --extra transcribe`, or supply any object implementing
+`Transcriber`. `transcribe=True` auto-detects language; `ClipTranscription` sets it per clip. The
+trimmed and speed-adjusted audio is transcribed and cached once, then word timings repeat with
+looped clips and switch at transition midpoints. The active spoken word uses the theme highlight
+color. Clip captions default to a separate top lane so scripted narration remains readable.
+
+Call `project.transcribe_clips()` before rendering for structured clip-local results. A render also
+returns them through `RenderResult.transcripts`; SRT sidecars merge clip and narration cues by
+time. Transcription does not enable `keep_audio` or change video duration. Clips with no detected
+speech emit a warning, while clips without an audio stream fail early.
 
 Each dialogue line can use prerecorded audio with `audio=...`. Otherwise the speaker needs a
 `VoiceProvider`: `ChatterboxVoice`, `KokoroVoice`, or a custom provider implementing `synthesize`.

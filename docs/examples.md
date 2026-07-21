@@ -69,6 +69,50 @@ duration follows the narration automatically. A still in a multi-clip recipe nee
 For synthesized speech instead, register the speaker with a voice provider and omit `audio=`. See
 [captions and voices](guides/captions-and-voices.md) for Chatterbox and Kokoro setup.
 
+## Streamer facecam layout
+
+Crop a webcam embedded in horizontal gameplay and move it into the lower part of the vertical
+canvas. The source is decoded only once, and normalized coordinates keep the layout reusable.
+
+```python
+from rot import Facecam, NormalizedRect, Placement, Project
+
+project = (
+    Project.short_form()
+    .background(
+        "assets/stream.mp4",
+        fit="custom",
+        fit_amount=0.35,
+        anchor="top",
+        keep_audio=True,
+        facecam=Facecam(
+            crop=NormalizedRect(0.02, 0.04, 0.24, 0.32),
+            destination=NormalizedRect(0.1, 0.7, 0.8, 0.25),
+        ),
+    )
+    .overlay_text(
+        "[color=#FFE135][b]CLUTCH[/b][/color] [i]or throw?[/i]",
+        at=0,
+        position=Placement(0.5, 0.06, anchor="top"),
+    )
+)
+
+project.render("streamer-short.mp4", overwrite=True)
+```
+
+To caption speech already present in the stream, opt the clip in and configure a local transcriber:
+
+```python
+from rot import StableTSTranscriber
+
+project.clips[0].transcribe = True
+project.with_transcriber(StableTSTranscriber(model="base"))
+project.clip_captions("pop", position=Placement(0.5, 0.08, anchor="top"))
+```
+
+Each spoken word highlights at its Stable-TS word timestamp. Use
+`project.transcribe_clips()` to inspect the structured transcript before rendering.
+
 ## Ranked countdown
 
 Use one clip per rank and bind the label to the clip rather than calculating timestamps. `rot`

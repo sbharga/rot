@@ -33,6 +33,10 @@ class AlignmentError(RotError):
     """A word aligner could not align speech."""
 
 
+class TranscriptionError(RotError):
+    """A speech-to-text provider could not transcribe clip audio."""
+
+
 class ParserError(RotError):
     """An AI parser could not convert a script."""
 

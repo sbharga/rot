@@ -14,6 +14,7 @@ from rot import (
     OpenRouterParser,
     ParserError,
     StableTSAligner,
+    StableTSTranscriber,
 )
 
 
@@ -255,3 +256,39 @@ def test_stable_ts_adapter_with_mocked_runtime(monkeypatch: pytest.MonkeyPatch) 
     words = StableTSAligner().align(Path("audio.wav"), "Hello", language="en")
     assert words[0].text == "Hello"
     assert (words[0].start, words[0].end) == (0.1, 0.5)
+
+
+def test_stable_ts_transcriber_returns_word_timestamps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Result:
+        language = "en"
+
+        def to_dict(self) -> dict[str, object]:
+            return {
+                "language": "en",
+                "segments": [
+                    {
+                        "text": "Hello world",
+                        "start": 0.1,
+                        "end": 0.8,
+                        "words": [
+                            {"word": "Hello", "start": 0.1, "end": 0.4},
+                            {"word": "world", "start": 0.4, "end": 0.8},
+                        ],
+                    }
+                ],
+            }
+
+    class _Model:
+        def transcribe(self, *args: object, **kwargs: object) -> _Result:
+            assert kwargs["word_timestamps"] is True
+            return _Result()
+
+    stable = ModuleType("stable_whisper")
+    stable.load_model = lambda *args, **kwargs: _Model()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "stable_whisper", stable)
+    StableTSTranscriber._models.clear()
+    transcript = StableTSTranscriber().transcribe(Path("audio.wav"), language="en")
+    assert transcript.text == "Hello world"
+    assert transcript.segments[0].words[1].start == 0.4

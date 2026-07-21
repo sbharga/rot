@@ -64,6 +64,51 @@ Intermediate values enlarge the clip without distortion, crop overflow according
 pad the remaining canvas. `fill="black"` makes solid letterboxing; `fill="blur"` puts a blurred,
 full-canvas copy of the clip behind the sharp foreground.
 
+### Extract an embedded facecam
+
+Use `Facecam` when streamer footage already contains a webcam that should occupy part of the
+vertical layout instead of relying on blur. Source and destination rectangles use normalized 0–1
+coordinates, and the crop cover-fills its destination without distortion.
+
+```python
+from rot import Facecam, NormalizedRect
+
+project.add_clip(
+    "stream.mp4",
+    fit="custom",
+    fit_amount=0.35,
+    anchor="top",
+    facecam=Facecam(
+        crop=NormalizedRect(0.02, 0.04, 0.24, 0.32),
+        destination=NormalizedRect(0.1, 0.7, 0.8, 0.25),
+    ),
+)
+```
+
+Facecam extraction requires a video and `fit="custom"`. It uses the same trim, looping, and speed
+as its clip. The default black fill replaces blur; `fill="blur"` keeps blur behind the composition.
+
+### Choose the exact framing point
+
+`focus=(x, y)` chooses the normalized source point retained when `cover` or `custom` fitting crops
+overflow. `position=Placement(...)` independently places a `contain` or `custom` foreground on the
+output canvas:
+
+```python
+from rot import Placement
+
+project.background(
+    "gameplay.mp4",
+    fit="custom",
+    fit_amount=0.35,
+    focus=(0.72, 0.4),
+    position=Placement(0.5, 0.08, anchor="top"),
+)
+```
+
+Coordinates range from 0 through 1 and clamp to valid crop/placement bounds. When either option is
+omitted, the corresponding crop or placement continues to use `anchor`.
+
 ## Time-bound overlays
 
 Use `at` and `duration` for absolute timing, `during="line-id"` for dialogue, `speaker="alex"`
@@ -87,6 +132,10 @@ portraits automatically follow that speaker’s lines.
 Static overlays accept PNG, JPEG, and any other static format decoded by the installed FFmpeg;
 transparent formats preserve alpha. `width` controls scale while keeping the aspect ratio,
 `opacity` ranges from 0 through 1, and animations are `none`, `pop`, `fade`, `slide`, or `bounce`.
+
+For exact placement, pass `Placement(x, y, anchor=...)` instead of a named position. Coordinates
+are normalized against the output canvas. Image overlays, speaker portraits, text overlays, and
+caption themes all accept this placement model while existing named anchors retain their margins.
 
 ## Mix background music
 

@@ -36,6 +36,7 @@ uv sync --extra kokoro       # Kokoro-82M
 uv sync --extra align        # Stable-TS word alignment
 uv sync --extra openrouter   # OpenRouter script parsing
 uv sync --extra youtube      # YouTube downloading with yt-dlp
+uv sync --extra twitch       # Official Twitch clip downloading
 uv sync --extra publish      # Official YouTube, Instagram, and TikTok publishing APIs
 ```
 
@@ -129,6 +130,45 @@ Intermediate values enlarge the clip without distortion, crop the overflow accor
 and pad any remaining uncovered canvas area. The default `fill="black"` uses solid letterboxing;
 `fill="blur"` places a blurred, full-canvas copy of the clip behind the sharp foreground.
 
+Streamer footage can extract an embedded facecam from the same custom-fit source. Both rectangles
+use normalized 0–1 coordinates, so the layout survives resolution changes. The facecam preserves
+its aspect ratio and cover-fills its destination:
+
+```python
+from rot import Facecam, NormalizedRect
+
+project.background(
+    "stream.mp4",
+    fit="custom",
+    fit_amount=0.35,
+    anchor="top",
+    facecam=Facecam(
+        crop=NormalizedRect(x=0.02, y=0.04, width=0.24, height=0.32),
+        destination=NormalizedRect(x=0.1, y=0.7, width=0.8, height=0.25),
+    ),
+)
+```
+
+The default black fill leaves the remaining canvas clean. Set `fill="blur"` explicitly to retain
+blur behind both the fitted clip and extracted facecam.
+
+Use normalized `focus=(x, y)` to choose the exact source point retained by `cover` or `custom`
+cropping. For `contain` or `custom`, `position=Placement(...)` independently places the fitted
+foreground within the output canvas:
+
+```python
+project.background(
+    "gameplay.mp4",
+    fit="custom",
+    fit_amount=0.35,
+    focus=(0.72, 0.4),
+    position=Placement(0.5, 0.08, anchor="top"),
+)
+```
+
+Both controls clamp safely to the available source/canvas bounds. Omit either one to retain the
+corresponding behavior from the legacy `anchor` option.
+
 ```python
 project = (
     Project.short_form()
@@ -178,6 +218,29 @@ project = (
 )
 ```
 
+Every layered element also accepts a normalized `Placement`. Its anchor selects which point on the
+element is attached to `(x, y)`; existing named positions remain available:
+
+```python
+from rot import Placement
+
+project.overlay_text(
+    "[color=#FFE135]#5[/color] — [i]Huge comeback[/i]",
+    during_clip="rank-5",
+    position=Placement(0.5, 0.08, anchor="top"),
+)
+project.overlay_image(
+    "assets/reaction.png",
+    during_clip="rank-5",
+    position=Placement(0.92, 0.82, anchor="bottom-right"),
+)
+```
+
+Safe inline tags are `[color=#RGB]`, `[color=#RRGGBB]`, `[b]`, `[i]`, `[u]`, `[font=...]`, and
+`[size=...]`; tags may nest, and doubled brackets produce literal brackets. The same syntax works
+inside dialogue captions. Formatting is stripped before speech generation, alignment, and SRT
+output. During captions, the active-word highlight temporarily wins over an inline color.
+
 Clips render in the order they are added. `during_clip` accepts either a clip ID or a zero-based
 clip index. Text can also use `at`/`duration`, `during="line-id"`, or `speaker="alex"`; an `at`
 overlay without a duration remains visible through the end of the video. Text overlays render
@@ -195,6 +258,36 @@ Every line may point to prerecorded audio. Otherwise its speaker needs a `VoiceP
 `ChatterboxVoice`, `KokoroVoice`, or a custom provider implementing `synthesize`. `StableTSAligner` provides
 known-transcript word alignment. Without an aligner, `rot` estimates word timings from the audio
 duration and emits a warning.
+
+### Transcribe speech already inside clips
+
+Opt selected clips into local speech-to-text with `transcribe=True`. Word timestamps drive the
+same active-word highlight used by dialogue captions, while a separate top caption lane prevents
+clip speech from colliding with scripted narration:
+
+```python
+from rot import ClipTranscription, StableTSTranscriber
+
+project = (
+    Project.short_form()
+    .background("stream.mp4", keep_audio=True, transcribe=True)
+    .add_clip(
+        "interview.mp4",
+        keep_audio=True,
+        transcribe=ClipTranscription(language="en"),
+    )
+    .with_transcriber(StableTSTranscriber(model="base"))
+    .clip_captions("pop", position=Placement(0.5, 0.08, anchor="top"))
+)
+
+transcripts = project.transcribe_clips()
+```
+
+`transcribe=True` auto-detects language. The default Stable-TS provider requires
+`uv sync --extra transcribe`; custom `Transcriber` implementations remain dependency-free.
+Transcription is cached by source, trim, speed, language, and provider. It does not alter video
+duration or implicitly enable source audio. `RenderResult.transcripts` exposes the same clip-local
+structured results, and `caption_sidecar=True` includes clip speech in the SRT output.
 
 Kokoro uses named voices instead of reference-audio cloning and runs well on CPU:
 
@@ -240,13 +333,19 @@ project.script(free_form_text, parser=parser)
 
 ## Clip discovery
 
-`rot clips TARGET` ranks the strongest short-form windows in a YouTube URL, a local video file, or
-a whole folder of existing footage.
+`rot clips TARGET` ranks the strongest short-form windows in a YouTube video, an authorized Twitch
+clip, a local video file, or a whole folder of existing footage.
 
 ```console
 # A permitted YouTube source (needs the `youtube` extra).
 uv run rot clips "https://www.youtube.com/watch?v=VIDEO_ID" \
   --method hybrid --duration 30 --count 5 -o clips
+
+# An existing Twitch clip owned by a channel you broadcast or edit.
+export ROT_TWITCH_CLIENT_ID=...
+export ROT_TWITCH_ACCESS_TOKEN=...
+uv run rot clips "https://clips.twitch.tv/CLIP_ID" \
+  --method hybrid --duration 20 --count 2 -o clips
 
 # A local file, or a library ranked across every video in it.
 uv run rot clips ./recording.mp4 --duration 20 --count 4 -o clips
@@ -296,6 +395,10 @@ The exported clips preserve the source dimensions but are accurately cut and enc
 AAC 48 kHz stereo MP4s. A later `Project` render applies rot's vertical 1080×1920 output contract.
 Only download and reuse videos you have permission to process; YouTube availability, age gates,
 regional restrictions, and authentication are handled by yt-dlp and can still prevent a download.
+Twitch uses its official Clips Download API and requires a user token with
+`channel:manage:clips` or `editor:manage:clips`; the user must be the broadcaster or an authorized
+editor for the clip's channel. Pass `--twitch-variant portrait` only when that clip has an official
+portrait version available.
 
 ## Publish a rendered short
 

@@ -27,8 +27,10 @@ tts = ["chatterbox-tts>=0.1.7"]
 chatterbox = ["chatterbox-tts>=0.1.7"]
 kokoro = ["kokoro>=0.9.4", "numpy>=1.24", "soundfile>=0.13"]
 align = ["stable-ts>=2.19"]
+transcribe = ["stable-ts>=2.19"]
 openrouter = ["httpx>=0.27"]
 youtube = ["yt-dlp>=2025.12.8"]
+twitch = ["httpx>=0.27"]
 publish = ["httpx>=0.27"]
 all = [
   "chatterbox-tts>=0.1.7",

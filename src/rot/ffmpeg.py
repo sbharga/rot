@@ -14,9 +14,12 @@ from .effects import BuiltinEffect
 from .errors import ConfigurationError, RenderError
 from .models import (
     Clip,
+    ClipTranscript,
+    Facecam,
     FilterNode,
     MediaInfo,
     Overlay,
+    Placement,
     RenderSettings,
     Soundtrack,
     Utterance,
@@ -44,25 +47,40 @@ def _node(node: FilterNode) -> str:
     return f"{node.name}={args}"
 
 
-def _anchor(anchor: str, width: int, height: int) -> tuple[str, str]:
-    horizontal = {
+def _anchor(anchor: str | Placement, width: int, height: int) -> tuple[str, str]:
+    if isinstance(anchor, Placement):
+        point_x = _number(anchor.x * width)
+        point_y = _number(anchor.y * height)
+        horizontal_alignment, vertical_alignment = _alignment(anchor.anchor)
+        x_positions = {
+            "left": point_x,
+            "center": f"{point_x}-w/2",
+            "right": f"{point_x}-w",
+        }
+        y_positions = {
+            "top": point_y,
+            "center": f"{point_y}-h/2",
+            "bottom": f"{point_y}-h",
+        }
+        return x_positions[horizontal_alignment], y_positions[vertical_alignment]
+    horizontal_positions = {
         "left": "80",
         "center": "(W-w)/2",
         "right": "W-w-80",
     }
-    vertical = {"top": "120", "center": "(H-h)/2", "bottom": "H-h-260"}
+    vertical_positions = {"top": "120", "center": "(H-h)/2", "bottom": "H-h-260"}
     if "left" in anchor:
-        x = horizontal["left"]
+        x = horizontal_positions["left"]
     elif "right" in anchor:
-        x = horizontal["right"]
+        x = horizontal_positions["right"]
     else:
-        x = horizontal["center"]
+        x = horizontal_positions["center"]
     if "top" in anchor:
-        y = vertical["top"]
+        y = vertical_positions["top"]
     elif "bottom" in anchor:
-        y = vertical["bottom"]
+        y = vertical_positions["bottom"]
     else:
-        y = vertical["center"]
+        y = vertical_positions["center"]
     return x, y
 
 
@@ -125,21 +143,32 @@ def _alignment(anchor: str) -> tuple[str, str]:
     return horizontal, vertical
 
 
-def _cover_filter(anchor: str, width: int, height: int) -> str:
-    x, y = {
-        "center": ("(iw-ow)/2", "(ih-oh)/2"),
-        "top": ("(iw-ow)/2", "0"),
-        "bottom": ("(iw-ow)/2", "ih-oh"),
-        "left": ("0", "(ih-oh)/2"),
-        "right": ("iw-ow", "(ih-oh)/2"),
-        "top-left": ("0", "0"),
-        "top-right": ("iw-ow", "0"),
-        "bottom-left": ("0", "ih-oh"),
-        "bottom-right": ("iw-ow", "ih-oh"),
-    }[anchor]
-    return (
-        f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}:{x}:{y}"
-    )
+def _cover_filter(
+    anchor: str,
+    width: int,
+    height: int,
+    focus: tuple[float, float] | None = None,
+) -> str:
+    if focus is not None:
+        focus_x, focus_y = (_number(value) for value in focus)
+        x = f"min(max(iw*{focus_x}-ow/2,0),iw-ow)"
+        y = f"min(max(ih*{focus_y}-oh/2,0),ih-oh)"
+    else:
+        x, y = {
+            "center": ("(iw-ow)/2", "(ih-oh)/2"),
+            "top": ("(iw-ow)/2", "0"),
+            "bottom": ("(iw-ow)/2", "ih-oh"),
+            "left": ("0", "(ih-oh)/2"),
+            "right": ("iw-ow", "(ih-oh)/2"),
+            "top-left": ("0", "0"),
+            "top-right": ("iw-ow", "0"),
+            "bottom-left": ("0", "ih-oh"),
+            "bottom-right": ("iw-ow", "ih-oh"),
+        }[anchor]
+    scaled = f"scale={width}:{height}:force_original_aspect_ratio=increase"
+    if focus is None:
+        return f"{scaled},crop={width}:{height}:{x}:{y}"
+    return f"{scaled},crop=w={width}:h={height}:x='{x}':y='{y}'"
 
 
 def _custom_foreground_filter(clip: Clip, width: int, height: int) -> str:
@@ -147,9 +176,14 @@ def _custom_foreground_filter(clip: Clip, width: int, height: int) -> str:
     contain = f"min({width}/iw,{height}/ih)"
     cover = f"max({width}/iw,{height}/ih)"
     factor = f"({contain}+({cover}-{contain})*{amount})"
-    horizontal, vertical = _alignment(clip.anchor)
-    crop_x = {"left": "0", "center": "(iw-ow)/2", "right": "iw-ow"}[horizontal]
-    crop_y = {"top": "0", "center": "(ih-oh)/2", "bottom": "ih-oh"}[vertical]
+    if clip.focus is not None:
+        focus_x, focus_y = (_number(value) for value in clip.focus)
+        crop_x = f"min(max(iw*{focus_x}-ow/2,0),iw-ow)"
+        crop_y = f"min(max(ih*{focus_y}-oh/2,0),ih-oh)"
+    else:
+        horizontal, vertical = _alignment(clip.anchor)
+        crop_x = {"left": "0", "center": "(iw-ow)/2", "right": "iw-ow"}[horizontal]
+        crop_y = {"top": "0", "center": "(ih-oh)/2", "bottom": "ih-oh"}[vertical]
     return (
         f"scale=w='trunc(iw*{factor}/2)*2':h=-2,"
         f"crop=w='min(iw,{width})':h='min(ih,{height})':x='{crop_x}':y='{crop_y}'"
@@ -165,7 +199,36 @@ def _foreground_fit_filter(clip: Clip, settings: RenderSettings) -> str:
     return _custom_foreground_filter(clip, settings.width, settings.height)
 
 
-def _frame_position(anchor: str) -> tuple[str, str]:
+def _placement_position(
+    placement: Placement,
+    *,
+    canvas_width: str = "W",
+    canvas_height: str = "H",
+    element_width: str = "w",
+    element_height: str = "h",
+) -> tuple[str, str]:
+    horizontal, vertical = _alignment(placement.anchor)
+    point_x = _number(placement.x)
+    point_y = _number(placement.y)
+    x = {
+        "left": f"{canvas_width}*{point_x}",
+        "center": f"{canvas_width}*{point_x}-{element_width}/2",
+        "right": f"{canvas_width}*{point_x}-{element_width}",
+    }[horizontal]
+    y = {
+        "top": f"{canvas_height}*{point_y}",
+        "center": f"{canvas_height}*{point_y}-{element_height}/2",
+        "bottom": f"{canvas_height}*{point_y}-{element_height}",
+    }[vertical]
+    return (
+        f"min(max({x},0),{canvas_width}-{element_width})",
+        f"min(max({y},0),{canvas_height}-{element_height})",
+    )
+
+
+def _frame_position(anchor: str, placement: Placement | None = None) -> tuple[str, str]:
+    if placement is not None:
+        return _placement_position(placement)
     horizontal, vertical = _alignment(anchor)
     x = {"left": "0", "center": "(W-w)/2", "right": "W-w"}[horizontal]
     y = {"top": "0", "center": "(H-h)/2", "bottom": "H-h"}[vertical]
@@ -177,9 +240,35 @@ def _blur_background_filter(clip: Clip, settings: RenderSettings) -> str:
     small_height = max(2, (settings.height // 4) // 2 * 2)
     sigma = _number(max(0.1, clip.fill_blur / 4))
     return (
-        f"{_cover_filter(clip.anchor, small_width, small_height)},"
+        f"{_cover_filter(clip.anchor, small_width, small_height, clip.focus)},"
         f"gblur=sigma={sigma}:steps=2,scale={settings.width}:{settings.height}"
     )
+
+
+def _even_pixels(fraction: float, dimension: int) -> int:
+    return max(2, int(round(fraction * dimension)) // 2 * 2)
+
+
+def _facecam_filter(facecam: Facecam, settings: RenderSettings) -> tuple[str, int, int]:
+    crop = facecam.crop
+    destination = facecam.destination
+    width = _even_pixels(destination.width, settings.width)
+    height = _even_pixels(destination.height, settings.height)
+    x = round(destination.x * settings.width)
+    y = round(destination.y * settings.height)
+    crop_width = _number(crop.width)
+    crop_height = _number(crop.height)
+    crop_x = _number(crop.x)
+    crop_y = _number(crop.y)
+    filters = (
+        f"crop=w='max(2,trunc(iw*{crop_width}/2)*2)':"
+        f"h='max(2,trunc(ih*{crop_height}/2)*2)':"
+        f"x='min(iw-ow,trunc(iw*{crop_x}/2)*2)':"
+        f"y='min(ih-oh,trunc(ih*{crop_y}/2)*2)',"
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},setsar=1"
+    )
+    return filters, x, y
 
 
 def _fit_filter(clip: Clip, settings: RenderSettings) -> str:
@@ -187,16 +276,38 @@ def _fit_filter(clip: Clip, settings: RenderSettings) -> str:
     if clip.fit == "stretch":
         return f"scale={width}:{height}"
     if clip.fit == "contain":
-        return f"{_foreground_fit_filter(clip, settings)},pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
+        if clip.position is None:
+            pad_x, pad_y = "(ow-iw)/2", "(oh-ih)/2"
+        else:
+            pad_x, pad_y = _placement_position(
+                clip.position,
+                canvas_width="ow",
+                canvas_height="oh",
+                element_width="iw",
+                element_height="ih",
+            )
+        return (
+            f"{_foreground_fit_filter(clip, settings)},"
+            f"pad={width}:{height}:x='{pad_x}':y='{pad_y}':color=black"
+        )
     if clip.fit == "custom":
-        horizontal, vertical = _alignment(clip.anchor)
-        pad_x = {"left": "0", "center": "(ow-iw)/2", "right": "ow-iw"}[horizontal]
-        pad_y = {"top": "0", "center": "(oh-ih)/2", "bottom": "oh-ih"}[vertical]
+        if clip.position is None:
+            horizontal, vertical = _alignment(clip.anchor)
+            pad_x = {"left": "0", "center": "(ow-iw)/2", "right": "ow-iw"}[horizontal]
+            pad_y = {"top": "0", "center": "(oh-ih)/2", "bottom": "oh-ih"}[vertical]
+        else:
+            pad_x, pad_y = _placement_position(
+                clip.position,
+                canvas_width="ow",
+                canvas_height="oh",
+                element_width="iw",
+                element_height="ih",
+            )
         return (
             f"{_custom_foreground_filter(clip, width, height)},"
             f"pad={width}:{height}:x='{pad_x}':y='{pad_y}':color=black"
         )
-    return _cover_filter(clip.anchor, width, height)
+    return _cover_filter(clip.anchor, width, height, clip.focus)
 
 
 def _atempo(speed: float) -> str:
@@ -217,10 +328,13 @@ class PreparedMedia:
     clips: list[tuple[Clip, MediaInfo, float]]
     utterances: list[tuple[Utterance, Path]]
     overlays: list[tuple[Overlay, tuple[tuple[float, float], ...]]]
-    portraits: list[tuple[Path, str, int, str, tuple[tuple[float, float], ...]]]
+    portraits: list[tuple[Path, str | Placement, int, str, tuple[tuple[float, float], ...]]]
     duration: float
     text_overlay_file: Path | None = None
+    clip_caption_file: Path | None = None
     caption_file: Path | None = None
+    caption_utterances: tuple[Utterance, ...] = ()
+    transcripts: tuple[ClipTranscript, ...] = ()
     music: Soundtrack | None = None
     music_info: MediaInfo | None = None
     effects: list[Any] = field(default_factory=list)
@@ -319,32 +433,57 @@ class FFmpegCompiler:
                         duration=duration, width=self.settings.width, height=self.settings.height
                     )
                 )
+            branch_count = 1 + int(clip.fill == "blur") + int(clip.facecam is not None)
             if clip.fill == "blur":
-                background_source = f"vfillbgsource{position}"
-                foreground_source = f"vfillfgsource{position}"
+                branch_labels = [f"vfillbgsource{position}", f"vfillfgsource{position}"]
+            else:
+                branch_labels = [f"vsource{position}"]
+            if clip.facecam is not None:
+                branch_labels.append(f"vfacecamsource{position}")
+            if branch_count > 1:
+                graph.append(
+                    f"[{index}:v]{','.join(source_filters)},split={branch_count}"
+                    + "".join(f"[{branch}]" for branch in branch_labels)
+                )
+            foreground_index = 1 if clip.fill == "blur" else 0
+            source = branch_labels[foreground_index] if branch_count > 1 else f"{index}:v"
+            source_prefix = [] if branch_count > 1 else source_filters
+            facecam_source = branch_labels[-1] if clip.facecam is not None else None
+            if clip.fill == "blur":
                 background = f"vfillbg{position}"
                 foreground = f"vfillfg{position}"
-                fitted = f"vfilled{position}"
-                graph.append(
-                    f"[{index}:v]{','.join(source_filters)},split=2"
-                    f"[{background_source}][{foreground_source}]"
-                )
+                base = f"vfilled{position}"
+                background_source = branch_labels[0]
                 graph.append(
                     f"[{background_source}]{_blur_background_filter(clip, self.settings)}"
                     f"[{background}]"
                 )
                 graph.append(
-                    f"[{foreground_source}]{_foreground_fit_filter(clip, self.settings)}"
+                    f"[{source}]{_foreground_fit_filter(clip, self.settings)}"
                     f"[{foreground}]"
                 )
-                x, y = _frame_position(clip.anchor)
+                x, y = _frame_position(clip.anchor, clip.position)
                 graph.append(
-                    f"[{background}][{foreground}]overlay=x={x}:y={y}:shortest=1[{fitted}]"
+                    f"[{background}][{foreground}]overlay=x={x}:y={y}:shortest=1[{base}]"
                 )
-                graph.append(f"[{fitted}]{','.join(output_filters)}[{label}]")
             else:
-                filters = [*source_filters, _fit_filter(clip, self.settings), *output_filters]
-                graph.append(f"[{index}:v]{','.join(filters)}[{label}]")
+                base = f"vfitted{position}"
+                filters = [*source_prefix, _fit_filter(clip, self.settings)]
+                graph.append(f"[{source}]{','.join(filters)}[{base}]")
+            if clip.facecam is not None:
+                assert facecam_source is not None
+                facecam_label = f"vfacecam{position}"
+                composed = f"vfacecamcomposed{position}"
+                facecam_filters, facecam_x, facecam_y = _facecam_filter(
+                    clip.facecam, self.settings
+                )
+                graph.append(f"[{facecam_source}]{facecam_filters}[{facecam_label}]")
+                graph.append(
+                    f"[{base}][{facecam_label}]overlay=x={facecam_x}:y={facecam_y}:"
+                    f"shortest=1[{composed}]"
+                )
+                base = composed
+            graph.append(f"[{base}]{','.join(output_filters)}[{label}]")
             video_labels.append(label)
             clip_durations.append(duration)
 
@@ -441,6 +580,17 @@ class FFmpegCompiler:
                 .replace("'", r"\'")
             )
             result = "vtextoverlay"
+            graph.append(f"[{current}]ass=filename='{escaped}'[{result}]")
+            current = result
+
+        if media.clip_caption_file is not None:
+            escaped = (
+                str(media.clip_caption_file)
+                .replace("\\", r"\\")
+                .replace(":", r"\:")
+                .replace("'", r"\'")
+            )
+            result = "vclipcaption"
             graph.append(f"[{current}]ass=filename='{escaped}'[{result}]")
             current = result
 
