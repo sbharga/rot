@@ -11,6 +11,13 @@ overlays, effects, caption configuration, and export settings. `Renderer` valida
 generates or loads speech, aligns captions, resolves timeline selectors, and produces
 `PreparedMedia`.
 
+Still backgrounds are ordinary `Clip` values whose zero media duration selects FFmpeg's image
+loop input path. Static overlays resolve to the same utterance/clip timeline intervals as text,
+then remain separate RGBA inputs until compositing so transparency survives. `Soundtrack` is a
+single typed audio bed: preparation validates its source segment and fade bounds, while the
+compiler trims, sample-loops, fades, and optionally sidechain-compresses it from the combined
+speech bus before the final audio mix.
+
 `FFmpegCompiler` converts `PreparedMedia` into one typed FFmpeg filter graph. FFmpeg performs the
 frame work and final encode; Python does not iterate through frames. Inputs and filters are passed
 as a subprocess argument vector rather than through a shell. Custom effects return validated

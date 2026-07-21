@@ -10,6 +10,7 @@ from rot import (
     Overlay,
     Project,
     RenderSettings,
+    Soundtrack,
     TextOverlay,
 )
 
@@ -49,6 +50,30 @@ def test_overlay_requires_one_selector() -> None:
         Overlay("image.png")
     with pytest.raises(ConfigurationError):
         Overlay("image.png", at=1, speaker="alex")
+    assert Overlay("image.png", during_clip="intro").during_clip == "intro"
+    with pytest.raises(ConfigurationError, match="width"):
+        Overlay("image.png", at=1, width=0)
+
+
+def test_soundtrack_validates_trim_fades_and_volume() -> None:
+    music = Soundtrack(
+        "music.mp3",
+        volume=0.2,
+        trim_start=1,
+        trim_end=5,
+        loop=False,
+        fade_in=0.5,
+        fade_out=1,
+        ducking=True,
+    )
+    assert music.source == Path("music.mp3")
+    assert music.ducking is True
+    with pytest.raises(ConfigurationError, match="volume"):
+        Soundtrack("music.mp3", volume=-0.1)
+    with pytest.raises(ConfigurationError, match="trim end"):
+        Soundtrack("music.mp3", trim_start=2, trim_end=1)
+    with pytest.raises(ConfigurationError, match="fades"):
+        Soundtrack("music.mp3", fade_in=-1)
 
 
 def test_text_overlay_requires_one_selector_and_valid_style() -> None:
@@ -73,12 +98,21 @@ def test_project_fluent_methods(tmp_path: Path) -> None:
         .overlay_image(tmp_path / "image.png", speaker="alex")
         .overlay_text("Clip one", during_clip="first")
         .effect("blur", radius=2)
+        .soundtrack(
+            tmp_path / "music.mp3",
+            trim=(1, 4),
+            loop=False,
+            fade_in=0.2,
+            fade_out=0.3,
+            ducking=True,
+        )
     )
     assert project.clips[0].trim_start == 1
     assert project.clips[0].transition == "fade"
     assert project.caption_theme.uppercase is True
     assert project.overlays[0].speaker == "alex"
     assert project.text_overlays[0].during_clip == "first"
+    assert project.music is not None and project.music.trim_end == 4
 
 
 def test_add_clip_accepts_an_incoming_transition(tmp_path: Path) -> None:

@@ -20,6 +20,7 @@ from .models import (
     RenderSettings,
     Script,
     ScriptParser,
+    Soundtrack,
     Speaker,
     TextOverlay,
     WordAligner,
@@ -28,7 +29,11 @@ from .script import RotScriptParser
 
 
 class Project:
-    """A mutable fluent builder for one short-form video."""
+    """A mutable fluent builder for one short-form video.
+
+    Args:
+        settings: Output and encoding settings. Defaults to the short-form preset.
+    """
 
     def __init__(self, *, settings: RenderSettings | None = None) -> None:
         self.settings = settings or RenderSettings()
@@ -41,11 +46,12 @@ class Project:
         self.text_overlays: list[TextOverlay] = []
         self.global_effects: list[Effect] = []
         self.aligner: WordAligner | None = None
-        self.music: Path | None = None
-        self.music_volume: float = 0.15
+        self.music: Soundtrack | None = None
 
     @classmethod
     def short_form(cls) -> Project:
+        """Create a project using the standard vertical-video output contract."""
+
         return cls(settings=RenderSettings())
 
     def background(
@@ -65,6 +71,27 @@ class Project:
         speed: float = 1.0,
         clip_id: str | None = None,
     ) -> Project:
+        """Replace the visual track with its first video or still-image source.
+
+        Args:
+            source: Media path or an existing :class:`Clip`.
+            trim: Optional source start and end times in seconds.
+            duration: Rendered clip duration. Required for a still without dialogue.
+            loop: Repeat a short video to fill its requested duration.
+            fit: Canvas fitting mode: ``cover``, ``contain``, ``custom``, or ``stretch``.
+            fit_amount: Custom-fit interpolation from contain (0) to cover (1).
+            fill: Letterbox treatment, either ``black`` or ``blur``.
+            fill_blur: Blur radius for a blurred fill.
+            anchor: Crop or placement anchor.
+            keep_audio: Mix the source audio into the output.
+            volume: Source-audio gain.
+            speed: Playback-speed multiplier.
+            clip_id: Optional stable identifier for timeline selectors.
+
+        Returns:
+            This project for fluent chaining.
+        """
+
         self.clips.clear()
         return self.add_clip(
             source,
@@ -101,6 +128,32 @@ class Project:
         transition_duration: float = 0.3,
         clip_id: str | None = None,
     ) -> Project:
+        """Append a video or still image to the primary visual track.
+
+        Args:
+            source: Media path or an existing :class:`Clip`.
+            trim: Optional source start and end times in seconds.
+            duration: Rendered duration; required for stills in multi-clip projects.
+            loop: Repeat a short video to fill its requested duration.
+            fit: Canvas fitting mode.
+            fit_amount: Custom-fit interpolation from contain (0) to cover (1).
+            fill: Letterbox treatment, either ``black`` or ``blur``.
+            fill_blur: Blur radius for a blurred fill.
+            anchor: Crop or placement anchor.
+            keep_audio: Mix the source audio into the output.
+            volume: Source-audio gain.
+            speed: Playback-speed multiplier.
+            transition: Transition from the preceding clip into this clip.
+            transition_duration: Transition overlap in seconds.
+            clip_id: Optional stable identifier for timeline selectors.
+
+        Returns:
+            This project for fluent chaining.
+
+        Raises:
+            ConfigurationError: If transition options or identifiers are invalid.
+        """
+
         if transition not in TRANSITIONS:
             raise ConfigurationError(f"Unknown transition {transition!r}")
         if transition_duration <= 0:
@@ -161,6 +214,32 @@ class Project:
         margin_y: int = 160,
         z_index: int = 0,
     ) -> Project:
+        """Add styled text independently from dialogue captions.
+
+        Args:
+            text: Text to display.
+            at: Absolute start time in seconds.
+            duration: Duration for an absolute-time overlay; omitted means until video end.
+            during: Dialogue line identifier to follow.
+            speaker: Speaker whose utterances should show the text.
+            during_clip: Clip identifier or zero-based clip index to follow.
+            position: Canvas anchor.
+            font: Fontconfig font family.
+            font_size: Font size in output pixels.
+            color: Text color in ``#RRGGBB`` form.
+            outline_color: Outline color in ``#RRGGBB`` form.
+            outline_width: Outline thickness in pixels.
+            shadow: Shadow depth in pixels.
+            bold: Use the font's bold weight.
+            uppercase: Convert displayed text to uppercase.
+            margin_x: Horizontal safe-area margin in pixels.
+            margin_y: Vertical safe-area margin in pixels.
+            z_index: Ordering relative to other text overlays.
+
+        Returns:
+            This project for fluent chaining.
+        """
+
         self.text_overlays.append(
             TextOverlay(
                 text,
@@ -186,6 +265,19 @@ class Project:
         return self
 
     def transition(self, name: str, *, duration: float = 0.3) -> Project:
+        """Set the transition from the latest clip to the clip that follows it.
+
+        Args:
+            name: ``cut``, ``fade``, ``crossfade``, ``slide-left``, ``slide-right``, or ``zoom``.
+            duration: Transition overlap in seconds.
+
+        Returns:
+            This project for fluent chaining.
+
+        Raises:
+            ConfigurationError: If no clip exists or the transition is invalid.
+        """
+
         if not self.clips:
             raise ConfigurationError("Add a clip before setting its transition")
         if name not in TRANSITIONS:
@@ -207,6 +299,21 @@ class Project:
         portrait_width: int = 420,
         portrait_animation: str = "pop",
     ) -> Project:
+        """Register a dialogue speaker and optional animated portrait.
+
+        Args:
+            name: Unique whitespace-free script speaker name.
+            voice: Voice provider used when a line has no prerecorded audio.
+            portrait: Static image shown while this speaker talks.
+            language: Language identifier passed to voice and alignment providers.
+            portrait_position: Portrait canvas anchor.
+            portrait_width: Portrait width in output pixels.
+            portrait_animation: ``none``, ``pop``, ``fade``, ``slide``, or ``bounce``.
+
+        Returns:
+            This project for fluent chaining.
+        """
+
         if name in self.speakers:
             raise ConfigurationError(f"Speaker {name!r} is already registered")
         if portrait_animation not in OVERLAY_ANIMATIONS:
@@ -223,10 +330,30 @@ class Project:
         return self
 
     def script(self, source: str, *, parser: ScriptParser | None = None) -> Project:
+        """Parse dialogue source text and attach it to the project.
+
+        Args:
+            source: Parser-specific script text.
+            parser: Custom parser; defaults to :class:`RotScriptParser`.
+
+        Returns:
+            This project for fluent chaining.
+        """
+
         self.script_data = (parser or RotScriptParser()).parse(source)
         return self
 
     def script_file(self, path: str | Path, *, parser: ScriptParser | None = None) -> Project:
+        """Load and parse a UTF-8 dialogue file.
+
+        Args:
+            path: Script file path.
+            parser: Custom parser; defaults to :class:`RotScriptParser`.
+
+        Returns:
+            This project for fluent chaining.
+        """
+
         selected = parser or RotScriptParser()
         if hasattr(selected, "parse_file"):
             self.script_data = selected.parse_file(path)
@@ -235,6 +362,16 @@ class Project:
         return self
 
     def captions(self, theme: str | CaptionTheme = "pop", **overrides: Any) -> Project:
+        """Configure burned-in dialogue captions.
+
+        Args:
+            theme: Preset name or complete caption theme.
+            **overrides: CaptionTheme fields that override the selected theme.
+
+        Returns:
+            This project for fluent chaining.
+        """
+
         base = CaptionTheme.preset(theme) if isinstance(theme, str) else theme
         if overrides:
             values = {field: getattr(base, field) for field in base.__dataclass_fields__}
@@ -251,12 +388,32 @@ class Project:
         duration: float | None = None,
         during: str | None = None,
         speaker: str | None = None,
+        during_clip: int | str | None = None,
         position: str = "center",
         width: int | None = None,
         opacity: float = 1.0,
         animation: str = "pop",
         z_index: int = 0,
     ) -> Project:
+        """Add a static image overlay bound to one timeline selector.
+
+        Args:
+            source: FFmpeg-decodable static image path.
+            at: Absolute start time in seconds.
+            duration: Absolute overlay duration; defaults to two seconds.
+            during: Dialogue line identifier to follow.
+            speaker: Speaker whose utterances should show the image.
+            during_clip: Clip identifier or zero-based clip index to follow.
+            position: Canvas anchor.
+            width: Rendered width in pixels; defaults to 560.
+            opacity: Alpha multiplier from 0 through 1.
+            animation: ``none``, ``pop``, ``fade``, ``slide``, or ``bounce``.
+            z_index: Ordering relative to other image overlays.
+
+        Returns:
+            This project for fluent chaining.
+        """
+
         if animation not in OVERLAY_ANIMATIONS:
             raise ConfigurationError(f"Unknown overlay animation {animation!r}")
         self.overlays.append(
@@ -266,6 +423,7 @@ class Project:
                 duration=duration,
                 during=during,
                 speaker=speaker,
+                during_clip=during_clip,
                 position=position,  # type: ignore[arg-type]
                 width=width,
                 opacity=opacity,
@@ -276,21 +434,83 @@ class Project:
         return self
 
     def effect(self, effect: str | EffectSpec | Effect, **options: str | int | float) -> Project:
+        """Apply a built-in or custom effect to the finished visual track.
+
+        Args:
+            effect: Built-in name, effect specification, or Effect implementation.
+            **options: Effect-specific numeric or string options.
+
+        Returns:
+            This project for fluent chaining.
+        """
+
         self.global_effects.append(normalize_effect(effect, **options))
         return self
 
-    def soundtrack(self, source: str | Path, *, volume: float = 0.15) -> Project:
-        if volume < 0:
-            raise ConfigurationError("Soundtrack volume cannot be negative")
-        self.music = Path(source)
-        self.music_volume = volume
+    def soundtrack(
+        self,
+        source: str | Path,
+        *,
+        volume: float = 0.15,
+        trim: tuple[float, float | None] | None = None,
+        loop: bool = True,
+        fade_in: float = 0.0,
+        fade_out: float = 0.0,
+        ducking: bool = False,
+    ) -> Project:
+        """Configure the single background-music bed.
+
+        Calling this method again replaces the previous soundtrack.
+
+        Args:
+            source: Audio-bearing media path.
+            volume: Nonnegative music gain.
+            trim: Optional source start and end times in seconds.
+            loop: Repeat only the selected source segment to fill the video.
+            fade_in: Fade-in duration in seconds.
+            fade_out: Fade-out duration at the effective end of the bed.
+            ducking: Smoothly sidechain-compress music under dialogue.
+
+        Returns:
+            This project for fluent chaining.
+        """
+
+        start, end = trim or (0.0, None)
+        self.music = Soundtrack(
+            source,
+            volume=volume,
+            trim_start=start,
+            trim_end=end,
+            loop=loop,
+            fade_in=fade_in,
+            fade_out=fade_out,
+            ducking=ducking,
+        )
         return self
 
     def with_aligner(self, aligner: WordAligner) -> Project:
+        """Use a known-transcript word aligner for caption timing.
+
+        Args:
+            aligner: WordAligner implementation.
+
+        Returns:
+            This project for fluent chaining.
+        """
+
         self.aligner = aligner
         return self
 
     def with_caption_renderer(self, renderer: CaptionRenderer) -> Project:
+        """Replace the default ASS caption renderer.
+
+        Args:
+            renderer: CaptionRenderer implementation.
+
+        Returns:
+            This project for fluent chaining.
+        """
+
         self.caption_renderer = renderer
         return self
 
@@ -302,6 +522,18 @@ class Project:
         overwrite: bool | None = None,
         keep_workdir: bool = False,
     ) -> RenderResult:
+        """Validate, encode, and atomically write the project.
+
+        Args:
+            output: Destination ``.mp4`` path.
+            progress: Rich progress display, callback, or ``False``.
+            overwrite: Permit replacing output and sidecar files.
+            keep_workdir: Preserve temporary render files for debugging.
+
+        Returns:
+            Render metadata including the output path and FFmpeg command.
+        """
+
         from .render import Renderer
 
         return Renderer(self).render(

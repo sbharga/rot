@@ -13,6 +13,15 @@ from ..models import StageProgressCallback, WordTiming
 
 @dataclass(frozen=True, slots=True)
 class StableTSAligner:
+    """Align a known transcript with Stable-TS.
+
+    Attributes:
+        model: Whisper model name or path.
+        device: Optional inference device.
+        backend: ``whisper`` or ``faster-whisper``.
+        failure_threshold: Stable-TS alignment failure threshold.
+    """
+
     model: str = "base"
     device: str | None = None
     backend: Literal["whisper", "faster-whisper"] = "whisper"
@@ -29,6 +38,15 @@ class StableTSAligner:
         language: str,
         progress: StageProgressCallback | None = None,
     ) -> tuple[WordTiming, ...]:
+        """Align known text to speech audio.
+
+        Args:
+            audio_path: Speech audio path.
+            text: Known transcript.
+            language: Transcript language identifier.
+            progress: Optional stage progress callback.
+        """
+
         try:
             import stable_whisper
         except ImportError as exc:

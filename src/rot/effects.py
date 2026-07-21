@@ -16,16 +16,38 @@ BUILTIN_EFFECTS = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class BuiltinEffect:
+    """A validated built-in visual effect.
+
+    Attributes:
+        name: Built-in effect name.
+        options: Sorted effect option name/value pairs.
+    """
+
     name: str
     options: tuple[tuple[str, str | int | float], ...] = ()
 
     @classmethod
     def create(cls, name: str, **options: str | int | float) -> BuiltinEffect:
+        """Validate and construct a built-in effect.
+
+        Args:
+            name: Effect name.
+            **options: Effect-specific values.
+        """
+
         if name not in BUILTIN_EFFECTS:
             raise ConfigurationError(f"Unknown effect {name!r}")
         return cls(name, tuple(sorted(options.items())))
 
     def filters(self, *, duration: float, width: int, height: int) -> tuple[FilterNode, ...]:
+        """Compile the effect into safe FFmpeg filter nodes.
+
+        Args:
+            duration: Effected duration in seconds.
+            width: Output width.
+            height: Output height.
+        """
+
         values = dict(self.options)
         if self.name == "blur":
             return (FilterNode("boxblur", (("luma_radius", values.get("radius", 8)),)),)

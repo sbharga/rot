@@ -112,6 +112,12 @@ class DoctorReport:
     def healthy(self) -> bool:
         return all((self.ffmpeg, self.ffprobe, self.libass, self.h264, self.aac))
 
+    @property
+    def music_filters(self) -> bool:
+        """Whether FFmpeg can loop, fade, and duck background music."""
+
+        return all(name in self.filters for name in ("aloop", "afade", "sidechaincompress"))
+
 
 def doctor() -> DoctorReport:
     ffmpeg = shutil.which("ffmpeg")
@@ -127,7 +133,18 @@ def doctor() -> DoctorReport:
     filter_text = filter_run.stdout + filter_run.stderr
     encoder_text = encoder_run.stdout + encoder_run.stderr
     available_filters = tuple(
-        name for name in ("ass", "subtitles", "xfade", "overlay", "loudnorm") if name in filter_text
+        name
+        for name in (
+            "ass",
+            "subtitles",
+            "xfade",
+            "overlay",
+            "loudnorm",
+            "aloop",
+            "afade",
+            "sidechaincompress",
+        )
+        if name in filter_text
     )
     available_encoders = tuple(
         name for name in ("libx264", "h264_nvenc", "h264_qsv", "aac") if name in encoder_text

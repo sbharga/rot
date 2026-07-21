@@ -14,6 +14,17 @@ from ..models import Script, Utterance
 
 @dataclass(frozen=True, slots=True)
 class OpenRouterParser:
+    """Convert free-form text into a structured dialogue script through OpenRouter.
+
+    Attributes:
+        model: Explicit OpenRouter model identifier.
+        speakers: Optional allowed speaker names.
+        api_key: API key; defaults to ``OPENROUTER_API_KEY``.
+        endpoint: Chat-completions endpoint.
+        timeout: Request timeout in seconds.
+        retries: Retries for rate limits and server errors.
+    """
+
     model: str
     speakers: tuple[str, ...] = ()
     api_key: str | None = None
@@ -26,6 +37,12 @@ class OpenRouterParser:
             raise ParserError("OpenRouter requires an explicit model id")
 
     def parse(self, source: str) -> Script:
+        """Parse free-form source using strict JSON Schema output.
+
+        Args:
+            source: Non-empty draft text.
+        """
+
         if not source.strip():
             raise ParserError("Cannot parse an empty script")
         try:

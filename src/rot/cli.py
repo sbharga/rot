@@ -201,6 +201,7 @@ def _doctor(_: argparse.Namespace) -> int:
         "ASS/libass captions": report.libass,
         "H.264 encoder": report.h264,
         "AAC encoder": report.aac,
+        "Music loop/fade/duck filters": report.music_filters,
         "Chatterbox extra": importlib.util.find_spec("chatterbox") is not None,
         "Kokoro extra": importlib.util.find_spec("kokoro") is not None,
         "Stable-TS extra": importlib.util.find_spec("stable_whisper") is not None,
