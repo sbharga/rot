@@ -6,8 +6,11 @@ import argparse
 import importlib.util
 import json
 import logging
+import os
 import sys
+import tomllib
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from rich.console import Console
@@ -24,6 +27,17 @@ from .errors import ConfigurationError, RotError
 from .integrations import OpenRouterParser
 from .probe import doctor, probe
 from .project import Project
+from .publish import (
+    InstagramPublisher,
+    InstagramReel,
+    PublishJob,
+    PublishPreflight,
+    TikTokPublisher,
+    TikTokVideo,
+    YouTubePublisher,
+    YouTubeShort,
+    publish_all,
+)
 
 console = Console()
 error_console = Console(stderr=True)
@@ -76,6 +90,14 @@ def _parser() -> argparse.ArgumentParser:
     clips.add_argument("--overwrite-downloads", action="store_true")
     clips.add_argument("--overwrite-exports", action="store_true")
     clips.add_argument("-f", "--force", action="store_true", help="Overwrite downloads and exports")
+
+    publish = commands.add_parser("publish", help="Publish an existing MP4 through official APIs")
+    publish.add_argument("video", help="Rendered MP4 to publish")
+    publish.add_argument("--config", required=True, help="TOML file containing post metadata")
+    publish.add_argument("--yes", action="store_true", help="Confirm publication non-interactively")
+    publish.add_argument("--json", action="store_true", help="Print machine-readable results")
+    publish.add_argument("--no-progress", action="store_true")
+    publish.add_argument("--wait-timeout", type=float, default=900.0)
     return parser
 
 
@@ -184,6 +206,7 @@ def _doctor(_: argparse.Namespace) -> int:
         "Stable-TS extra": importlib.util.find_spec("stable_whisper") is not None,
         "OpenRouter extra": importlib.util.find_spec("httpx") is not None,
         "YouTube extra": importlib.util.find_spec("yt_dlp") is not None,
+        "Publishing extra": importlib.util.find_spec("httpx") is not None,
     }
     for name, value in rows.items():
         okay = bool(value)
@@ -322,6 +345,226 @@ def _clips(args: argparse.Namespace) -> int:
     return 0
 
 
+def _required(table: dict[str, Any], name: str, expected: type[Any], section: str) -> Any:
+    if name not in table:
+        raise ConfigurationError(f"[{section}] requires {name}")
+    value = table[name]
+    if expected is bool:
+        if not isinstance(value, bool):
+            raise ConfigurationError(f"[{section}].{name} must be a boolean")
+    elif not isinstance(value, expected) or isinstance(value, bool):
+        raise ConfigurationError(f"[{section}].{name} must be {expected.__name__}")
+    return value
+
+
+def _keys(table: dict[str, Any], allowed: set[str], section: str) -> None:
+    unknown = sorted(set(table) - allowed)
+    if unknown:
+        raise ConfigurationError(f"Unknown [{section}] setting: {unknown[0]}")
+
+
+def _publishing_jobs(path: str | Path) -> list[PublishJob]:
+    source = Path(path).expanduser()
+    if not source.is_file():
+        raise ConfigurationError(f"Publishing config does not exist: {source}")
+    try:
+        with source.open("rb") as stream:
+            document = tomllib.load(stream)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigurationError(f"Invalid publishing TOML: {exc}") from exc
+    unknown = sorted(set(document) - {"youtube", "instagram", "tiktok"})
+    if unknown:
+        raise ConfigurationError(f"Unknown publishing section: [{unknown[0]}]")
+    jobs: list[PublishJob] = []
+    youtube = document.get("youtube")
+    if youtube is not None:
+        if not isinstance(youtube, dict):
+            raise ConfigurationError("[youtube] must be a table")
+        _keys(
+            youtube,
+            {
+                "title",
+                "privacy",
+                "made_for_kids",
+                "contains_synthetic_media",
+                "has_paid_product_placement",
+                "description",
+                "tags",
+                "category_id",
+            },
+            "youtube",
+        )
+        tags = youtube.get("tags", [])
+        if not isinstance(tags, list) or any(not isinstance(item, str) for item in tags):
+            raise ConfigurationError("[youtube].tags must be an array of strings")
+        description = youtube.get("description", "")
+        category_id = youtube.get("category_id", "22")
+        if not isinstance(description, str) or not isinstance(category_id, str):
+            raise ConfigurationError("YouTube description/category_id must be strings")
+        token = os.environ.get("ROT_YOUTUBE_ACCESS_TOKEN", "")
+        if not token:
+            raise ConfigurationError("Set ROT_YOUTUBE_ACCESS_TOKEN to publish to YouTube")
+        youtube_post = YouTubeShort(
+            title=_required(youtube, "title", str, "youtube"),
+            privacy=_required(youtube, "privacy", str, "youtube"),
+            made_for_kids=_required(youtube, "made_for_kids", bool, "youtube"),
+            contains_synthetic_media=_required(
+                youtube, "contains_synthetic_media", bool, "youtube"
+            ),
+            has_paid_product_placement=_required(
+                youtube, "has_paid_product_placement", bool, "youtube"
+            ),
+            description=description,
+            tags=tuple(tags),
+            category_id=category_id,
+        )
+        jobs.append(PublishJob(YouTubePublisher(token), youtube_post))
+    instagram = document.get("instagram")
+    if instagram is not None:
+        if not isinstance(instagram, dict):
+            raise ConfigurationError("[instagram] must be a table")
+        _keys(instagram, {"caption", "share_to_feed"}, "instagram")
+        token = os.environ.get("ROT_INSTAGRAM_ACCESS_TOKEN", "")
+        user_id = os.environ.get("ROT_INSTAGRAM_USER_ID", "")
+        if not token or not user_id:
+            raise ConfigurationError(
+                "Set ROT_INSTAGRAM_ACCESS_TOKEN and ROT_INSTAGRAM_USER_ID to publish to Instagram"
+            )
+        caption = instagram.get("caption", "")
+        share = instagram.get("share_to_feed", True)
+        if not isinstance(caption, str) or not isinstance(share, bool):
+            raise ConfigurationError("Instagram caption/share_to_feed have invalid types")
+        api_version = os.environ.get("ROT_INSTAGRAM_API_VERSION", "v25.0")
+        jobs.append(
+            PublishJob(
+                InstagramPublisher(token, user_id, api_version=api_version),
+                InstagramReel(caption=caption, share_to_feed=share),
+            )
+        )
+    tiktok = document.get("tiktok")
+    if tiktok is not None:
+        if not isinstance(tiktok, dict):
+            raise ConfigurationError("[tiktok] must be a table")
+        _keys(
+            tiktok,
+            {
+                "privacy",
+                "allow_comments",
+                "allow_duet",
+                "allow_stitch",
+                "brand_organic",
+                "branded_content",
+                "ai_generated",
+                "caption",
+            },
+            "tiktok",
+        )
+        token = os.environ.get("ROT_TIKTOK_ACCESS_TOKEN", "")
+        if not token:
+            raise ConfigurationError("Set ROT_TIKTOK_ACCESS_TOKEN to publish to TikTok")
+        caption = tiktok.get("caption", "")
+        if not isinstance(caption, str):
+            raise ConfigurationError("[tiktok].caption must be a string")
+        tiktok_post = TikTokVideo(
+            privacy=_required(tiktok, "privacy", str, "tiktok"),
+            allow_comments=_required(tiktok, "allow_comments", bool, "tiktok"),
+            allow_duet=_required(tiktok, "allow_duet", bool, "tiktok"),
+            allow_stitch=_required(tiktok, "allow_stitch", bool, "tiktok"),
+            brand_organic=_required(tiktok, "brand_organic", bool, "tiktok"),
+            branded_content=_required(tiktok, "branded_content", bool, "tiktok"),
+            ai_generated=_required(tiktok, "ai_generated", bool, "tiktok"),
+            caption=caption,
+        )
+        jobs.append(PublishJob(TikTokPublisher(token), tiktok_post))
+    if not jobs:
+        raise ConfigurationError("Publishing config must contain at least one platform table")
+    return jobs
+
+
+def _confirm_publish(preflights: tuple[PublishPreflight, ...]) -> bool:
+    if not preflights:
+        return False
+    table = Table(title="Ready to publish")
+    table.add_column("Platform")
+    table.add_column("Account")
+    table.add_column("Effect")
+    for item in preflights:
+        if item.platform == "youtube":
+            effect = f"Visibility: {item.details.get('privacy', 'configured')}"
+        elif item.platform == "instagram":
+            feed = "shared to feed" if item.details.get("share_to_feed") else "Reels only"
+            effect = f"Immediate public Reel; {feed}"
+        else:
+            interactions = [
+                name
+                for name, enabled in (
+                    ("comments", item.details.get("allow_comments")),
+                    ("duet", item.details.get("allow_duet")),
+                    ("stitch", item.details.get("allow_stitch")),
+                )
+                if enabled
+            ]
+            effect = (
+                f"Visibility: {item.details.get('selected_privacy', 'configured')}; "
+                f"interactions: {', '.join(interactions) or 'none'}"
+            )
+        table.add_row(item.platform.title(), item.account_name or "authorized account", effect)
+    console.print(table)
+    if not sys.stdin.isatty():
+        raise ConfigurationError("Non-interactive publishing requires --yes")
+    answer = console.input("Publish now? [y/N] ").strip().lower()
+    return answer in {"y", "yes"}
+
+
+def _publish_video(args: argparse.Namespace) -> int:
+    if args.json and not args.yes:
+        raise ConfigurationError("--json publishing requires --yes")
+    jobs = _publishing_jobs(args.config)
+    result = publish_all(
+        args.video,
+        jobs,
+        consent=args.yes,
+        progress=not args.no_progress and not args.json,
+        wait_timeout=args.wait_timeout,
+        on_preflight=None if args.yes else _confirm_publish,
+    )
+    values = {
+        "results": [
+            {
+                "platform": item.platform,
+                "status": item.status,
+                "remote_id": item.remote_id,
+                "post_id": item.post_id,
+                "url": item.url,
+                "account": item.account_name,
+                "warnings": list(item.warnings),
+            }
+            for item in result.results
+        ],
+        "failures": [
+            {
+                "platform": item.platform,
+                "message": item.message,
+                "remote_id": item.remote_id,
+            }
+            for item in result.failures
+        ],
+    }
+    if args.json:
+        console.print_json(data=values)
+    else:
+        for published in result.results:
+            destination = published.url or published.post_id or published.remote_id
+            console.print(f"[bold green]Published[/] {published.platform}: {destination}")
+        for failure in result.failures:
+            console.print(f"[bold red]Failed[/] {failure.platform}: {failure.message}")
+    if result.failures and result.results:
+        return 1
+    if result.failures:
+        return 2
+    return 0
+
+
 def run(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     _configure_logging(args.verbose, args.json_logs)
@@ -332,6 +575,7 @@ def run(argv: list[str] | None = None) -> int:
             "doctor": _doctor,
             "parse": _parse,
             "clips": _clips,
+            "publish": _publish_video,
         }[args.command](args)
     except RotError as exc:
         error_console.print(f"[bold red]error:[/] {exc}")

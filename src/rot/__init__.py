@@ -20,6 +20,8 @@ from .errors import (
     DownloadError,
     ParserError,
     ProbeError,
+    PublishError,
+    PublishTimeoutError,
     RenderError,
     RotError,
     ScriptError,
@@ -49,6 +51,22 @@ from .models import (
     WordTiming,
 )
 from .project import Project
+from .publish import (
+    InstagramPublisher,
+    InstagramReel,
+    PublishBatchResult,
+    PublishFailure,
+    PublishJob,
+    PublishPreflight,
+    PublishResult,
+    StaticTokenProvider,
+    TikTokPublisher,
+    TikTokVideo,
+    TokenProvider,
+    YouTubePublisher,
+    YouTubeShort,
+    publish_all,
+)
 from .script import RotScriptParser
 
 __all__ = [
@@ -70,12 +88,21 @@ __all__ = [
     "EffectSpec",
     "FilterNode",
     "FolderClipFinder",
+    "InstagramPublisher",
+    "InstagramReel",
     "KokoroVoice",
     "MediaInfo",
     "Overlay",
     "OpenRouterParser",
     "ParserError",
     "ProbeError",
+    "PublishBatchResult",
+    "PublishError",
+    "PublishFailure",
+    "PublishJob",
+    "PublishPreflight",
+    "PublishResult",
+    "PublishTimeoutError",
     "ProgressEvent",
     "Project",
     "RenderError",
@@ -89,8 +116,12 @@ __all__ = [
     "SkippedSource",
     "Speaker",
     "StableTSAligner",
+    "StaticTokenProvider",
     "SynthesizedAudio",
     "TextOverlay",
+    "TikTokPublisher",
+    "TikTokVideo",
+    "TokenProvider",
     "Utterance",
     "VideoClipFinder",
     "VoiceError",
@@ -98,7 +129,10 @@ __all__ = [
     "WordAligner",
     "WordTiming",
     "YouTubeClipFinder",
+    "YouTubePublisher",
+    "YouTubeShort",
     "discover_videos",
+    "publish_all",
 ]
 
 __version__ = "0.1.0"

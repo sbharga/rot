@@ -14,7 +14,7 @@ transitions, and effects into a deterministic FFmpeg render.
 ## Start here
 
 - [Getting started](getting-started.md): install prerequisites and render a first video.
-- [Guides](guides/index.md): compose clips, add captions and voices, and discover source moments.
+- [Guides](guides/index.md): compose clips, add captions and voices, discover moments, and publish.
 - [Recipes](examples.md): copyable narration, ranking, and highlight-finding projects.
 - [Reference](reference/index.md): CLI commands and the media output contract.
 
@@ -35,6 +35,7 @@ transitions, and effects into a deterministic FFmpeg render.
 | Timeline and rendering | `src/rot/render.py`, `src/rot/ffmpeg.py` | Media preparation and safe FFmpeg graph compilation. |
 | Media utilities | `src/rot/probe.py`, `src/rot/clips.py` | FFmpeg capability checks, probing, and clip discovery. |
 | Optional integrations | `src/rot/integrations/` | Lazy integrations for TTS, alignment, OpenRouter, and YouTube. |
+| Publishing | `src/rot/publish.py` | Official API preflight, resumable upload, polling, and batch results. |
 | Command line | `src/rot/cli.py` | `rot` command implementation. |
 | Tests | `tests/` | Unit coverage plus synthetic FFmpeg integration tests. |
 

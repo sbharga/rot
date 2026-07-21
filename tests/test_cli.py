@@ -2,7 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from rot import ConfigurationError, Project
+import rot.cli as cli
+from rot import ConfigurationError, Project, PublishBatchResult, PublishFailure, PublishResult
 from rot.cli import _clip_target, _load_project
 
 
@@ -29,3 +30,21 @@ def test_clip_target_dispatches_url_folder_and_file(tmp_path: Path) -> None:
     # The error should name all three accepted forms rather than just one.
     message = str(excinfo.value)
     assert "URL" in message and "file" in message and "folder" in message
+
+
+def test_publish_cli_returns_partial_failure_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_publishing_jobs", lambda path: [object()])
+    monkeypatch.setattr(
+        cli,
+        "publish_all",
+        lambda *args, **kwargs: PublishBatchResult(
+            (PublishResult("youtube", "yt-id"),),
+            (PublishFailure("instagram", "failed"),),
+        ),
+    )
+    assert cli.run(["publish", "short.mp4", "--config", "publish.toml", "--yes", "--json"]) == 1
+
+
+def test_publish_json_requires_explicit_yes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_publishing_jobs", lambda path: [])
+    assert cli.run(["publish", "short.mp4", "--config", "publish.toml", "--json"]) == 2

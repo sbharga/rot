@@ -37,3 +37,10 @@ they compete globally and collecting unreadable sources as `SkippedSource` rathe
 scan. `YouTubeClipFinder` adds an explicit yt-dlp download step through the optional `youtube`
 extra. Downloaded videos never enter a `Project` implicitly; candidates can be exported or
 converted to ordinary trim-aware `Clip` models.
+
+Publishing is another explicit boundary after rendering. Platform-specific publishers validate a
+completed MP4, perform required remote account preflights, upload through resumable official API
+sessions, and poll processing to a terminal state. `publish_all` preflights every target before
+uploading valid jobs in caller order and preserves per-platform successes and failures. Access
+tokens come from an injected `TokenProvider` or environment-backed CLI configuration; they are
+never stored in metadata, logged, or rendered in object representations.
