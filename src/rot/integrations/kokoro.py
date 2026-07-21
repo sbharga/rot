@@ -40,6 +40,14 @@ class KokoroVoice:
     ``voice`` may be a built-in voice name, a comma-separated blend of voice
     names, or a local ``.pt`` voice pack. The speaker language is mapped to a
     Kokoro language pipeline unless ``lang_code`` is explicitly set.
+
+    Attributes:
+        voice: Built-in name, comma-separated blend, or local ``.pt`` pack.
+        speed: Speech-rate multiplier.
+        device: ``auto``, ``cpu``, ``cuda``, or ``mps``.
+        lang_code: Optional explicit Kokoro language code.
+        repo_id: Hugging Face model repository.
+        split_pattern: Optional regex used to split long text.
     """
 
     voice: Path | str = "af_heart"
@@ -84,6 +92,15 @@ class KokoroVoice:
         language: str,
         progress: StageProgressCallback | None = None,
     ) -> SynthesizedAudio:
+        """Synthesize one utterance to a 24 kHz mono WAV file.
+
+        Args:
+            text: Text to speak.
+            output_path: Destination WAV path.
+            language: Language used when ``lang_code`` is not set.
+            progress: Optional stage progress callback.
+        """
+
         lang_code = self.lang_code or self._language_for_voice(language)
         try:
             import numpy as np

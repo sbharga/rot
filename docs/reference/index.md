@@ -8,7 +8,9 @@ permalink: /reference/
 
 # Reference
 
-Use this section for operational details of the `rot` command and the default media contract.
+Use this section for the complete supported Python surface, command-line behavior, and output
+contract.
 
+* [Python API](api.md)
 * [Command line](cli.md)
 * [Output contract](output.md)

@@ -16,6 +16,12 @@ class RotScriptParser:
     """Parse rot's small, deterministic dialogue format."""
 
     def parse(self, source: str) -> Script:
+        """Parse deterministic ``@speaker [key=value]: text`` lines.
+
+        Args:
+            source: UTF-8 script content.
+        """
+
         utterances: list[Utterance] = []
         used_ids: set[str] = set()
         for number, raw_line in enumerate(source.splitlines(), 1):
@@ -52,6 +58,12 @@ class RotScriptParser:
         return Script(utterances)
 
     def parse_file(self, path: str | Path) -> Script:
+        """Parse a file and resolve relative line-audio paths beside it.
+
+        Args:
+            path: UTF-8 ``.rot`` file path.
+        """
+
         source_path = Path(path)
         try:
             text = source_path.read_text(encoding="utf-8")

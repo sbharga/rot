@@ -26,7 +26,14 @@ Anchor = Literal[
 
 @dataclass(frozen=True, slots=True)
 class ProgressEvent:
-    """A render-stage progress update."""
+    """A render-stage progress update.
+
+    Attributes:
+        stage: Stable stage name such as ``speech`` or ``render``.
+        completed: Completed units within the stage.
+        total: Total stage units.
+        message: Human-readable status message.
+    """
 
     stage: str
     completed: float
@@ -35,6 +42,8 @@ class ProgressEvent:
 
     @property
     def fraction(self) -> float:
+        """Return completed progress clamped to the inclusive 0-to-1 range."""
+
         return 0.0 if self.total <= 0 else min(1.0, max(0.0, self.completed / self.total))
 
 
@@ -44,6 +53,14 @@ StageProgressCallback = Callable[[str, float, float, str], None]
 
 @dataclass(frozen=True, slots=True)
 class WordTiming:
+    """Timing for one displayed word.
+
+    Attributes:
+        text: Displayed word text.
+        start: Absolute start time in seconds.
+        end: Absolute end time in seconds.
+    """
+
     text: str
     start: float
     end: float
@@ -55,6 +72,13 @@ class WordTiming:
 
 @dataclass(frozen=True, slots=True)
 class SynthesizedAudio:
+    """Audio returned by a voice provider.
+
+    Attributes:
+        path: Generated audio file.
+        duration: Optional known duration in seconds.
+    """
+
     path: Path
     duration: float | None = None
 
@@ -70,7 +94,17 @@ class VoiceProvider(Protocol):
         *,
         language: str,
         progress: StageProgressCallback | None = None,
-    ) -> SynthesizedAudio: ...
+    ) -> SynthesizedAudio:
+        """Generate speech audio.
+
+        Args:
+            text: Text to speak.
+            output_path: Requested destination file.
+            language: Speaker language identifier.
+            progress: Optional stage progress callback.
+        """
+
+        ...
 
 
 @runtime_checkable
@@ -84,12 +118,31 @@ class WordAligner(Protocol):
         *,
         language: str,
         progress: StageProgressCallback | None = None,
-    ) -> tuple[WordTiming, ...]: ...
+    ) -> tuple[WordTiming, ...]:
+        """Align known text to an audio file.
+
+        Args:
+            audio_path: Speech audio path.
+            text: Known transcript.
+            language: Transcript language identifier.
+            progress: Optional stage progress callback.
+        """
+
+        ...
 
 
 @runtime_checkable
 class ScriptParser(Protocol):
-    def parse(self, source: str) -> Script: ...
+    """Interface for converting source text into a validated dialogue script."""
+
+    def parse(self, source: str) -> Script:
+        """Parse source text into a Script.
+
+        Args:
+            source: Parser-specific source text.
+        """
+
+        ...
 
 
 @runtime_checkable
@@ -104,12 +157,28 @@ class CaptionRenderer(Protocol):
         *,
         width: int,
         height: int,
-    ) -> Path: ...
+    ) -> Path:
+        """Write an ASS-compatible caption sidecar.
+
+        Args:
+            path: Requested output path.
+            utterances: Timed dialogue lines.
+            theme: Caption styling.
+            width: Output canvas width.
+            height: Output canvas height.
+        """
+
+        ...
 
 
 @dataclass(frozen=True, slots=True)
 class FilterNode:
-    """A safe FFmpeg filter description used by custom effect plugins."""
+    """A safe FFmpeg filter description used by custom effect plugins.
+
+    Attributes:
+        name: FFmpeg filter name.
+        arguments: Ordered filter option name/value pairs.
+    """
 
     name: str
     arguments: tuple[tuple[str, str | int | float], ...] = ()
@@ -126,25 +195,73 @@ class FilterNode:
 
 @runtime_checkable
 class Effect(Protocol):
-    @property
-    def name(self) -> str: ...
+    """Interface for a validated visual-effect provider."""
 
-    def filters(self, *, duration: float, width: int, height: int) -> tuple[FilterNode, ...]: ...
+    @property
+    def name(self) -> str:
+        """Return the effect's stable display name."""
+
+        ...
+
+    def filters(self, *, duration: float, width: int, height: int) -> tuple[FilterNode, ...]:
+        """Return validated filters for a render.
+
+        Args:
+            duration: Effected timeline duration.
+            width: Output width.
+            height: Output height.
+        """
+
+        ...
 
 
 @dataclass(frozen=True, slots=True)
 class EffectSpec:
+    """Serializable effect name and options.
+
+    Attributes:
+        name: Built-in effect name.
+        options: Sorted effect option name/value pairs.
+    """
+
     name: str
     options: tuple[tuple[str, str | int | float], ...] = ()
 
     @classmethod
     def create(cls, name: str, **options: str | int | float) -> EffectSpec:
+        """Create a deterministic specification from keyword options.
+
+        Args:
+            name: Effect name.
+            **options: Effect-specific option values.
+        """
+
         return cls(name=name, options=tuple(sorted(options.items())))
 
 
 @dataclass(slots=True)
 class Clip:
-    """A video or still-image source on the primary background track."""
+    """A video or still-image source on the primary background track.
+
+    Attributes:
+        source: Source media path.
+        trim_start: Source start time in seconds.
+        trim_end: Optional source end time in seconds.
+        duration: Optional rendered duration.
+        loop: Whether a short video repeats.
+        fit: ``cover``, ``contain``, ``custom``, or ``stretch``.
+        anchor: Crop and placement anchor.
+        keep_audio: Whether source audio is mixed into the output.
+        volume: Source-audio gain.
+        speed: Playback-speed multiplier.
+        effects: Effects applied only to this clip.
+        transition: Transition from this clip to its successor.
+        transition_duration: Transition overlap in seconds.
+        id: Stable identifier used by timeline selectors.
+        fit_amount: Custom-fit interpolation from contain to cover.
+        fill: ``black`` or ``blur`` letterbox fill.
+        fill_blur: Blurred-fill strength.
+    """
 
     source: Path | str
     trim_start: float = 0.0
@@ -174,6 +291,18 @@ class Clip:
             raise ConfigurationError("duration must be positive")
         if self.fit not in {"cover", "contain", "custom", "stretch"}:
             raise ConfigurationError(f"Unknown clip fit {self.fit!r}")
+        if self.anchor not in {
+            "center",
+            "top",
+            "bottom",
+            "left",
+            "right",
+            "top-left",
+            "top-right",
+            "bottom-left",
+            "bottom-right",
+        }:
+            raise ConfigurationError(f"Unknown clip anchor {self.anchor!r}")
         if not 0 <= self.fit_amount <= 1:
             raise ConfigurationError("fit_amount must be between 0 and 1")
         if self.fill not in {"black", "blur"}:
@@ -215,6 +344,18 @@ def transition_overlap(clip: Clip, duration: float, next_duration: float) -> flo
 
 @dataclass(slots=True)
 class Speaker:
+    """Dialogue speaker configuration.
+
+    Attributes:
+        name: Unique script speaker name.
+        voice: Optional text-to-speech provider.
+        portrait: Optional static portrait image.
+        language: Provider language identifier.
+        portrait_position: Portrait canvas anchor.
+        portrait_width: Portrait width in pixels.
+        portrait_animation: Portrait entrance animation.
+    """
+
     name: str
     voice: VoiceProvider | None = None
     portrait: Path | str | None = None
@@ -230,10 +371,39 @@ class Speaker:
             self.portrait = Path(self.portrait)
         if self.portrait_width <= 0:
             raise ConfigurationError("portrait_width must be positive")
+        if self.portrait_position not in {
+            "center",
+            "top",
+            "bottom",
+            "left",
+            "right",
+            "top-left",
+            "top-right",
+            "bottom-left",
+            "bottom-right",
+        }:
+            raise ConfigurationError(f"Unknown portrait position {self.portrait_position!r}")
+        if self.portrait_animation not in {"none", "pop", "fade", "slide", "bounce"}:
+            raise ConfigurationError(
+                f"Unknown portrait animation {self.portrait_animation!r}"
+            )
 
 
 @dataclass(slots=True)
 class Utterance:
+    """One ordered line of dialogue.
+
+    Attributes:
+        speaker: Registered speaker name.
+        text: Spoken and captioned text.
+        id: Optional stable line identifier.
+        audio: Optional prerecorded audio path.
+        gap_after: Silence after the line in seconds.
+        start: Resolved absolute start time.
+        end: Resolved absolute end time.
+        words: Resolved word timings.
+    """
+
     speaker: str
     text: str
     id: str | None = None
@@ -255,14 +425,38 @@ class Utterance:
 
 @dataclass(slots=True)
 class Script:
+    """An ordered collection of dialogue utterances.
+
+    Attributes:
+        utterances: Lines in playback order.
+    """
+
     utterances: list[Utterance] = field(default_factory=list)
 
     def ids(self) -> set[str]:
+        """Return all non-null utterance identifiers."""
+
         return {item.id for item in self.utterances if item.id is not None}
 
 
 @dataclass(frozen=True, slots=True)
 class CaptionTheme:
+    """Styling and grouping for burned-in dialogue captions.
+
+    Attributes:
+        name: Theme name controlling built-in animation.
+        font: Fontconfig font family.
+        font_size: Font size in output pixels.
+        primary_color: Inactive word color in ``#RRGGBB`` form.
+        highlight_color: Active word color in ``#RRGGBB`` form.
+        outline_color: Outline color in ``#RRGGBB`` form.
+        outline_width: Outline thickness in pixels.
+        shadow: Shadow depth in pixels.
+        position_y: Baseline position in pixels.
+        max_words: Maximum words displayed in one group.
+        uppercase: Whether captions are uppercased.
+    """
+
     name: str = "pop"
     font: str = "DejaVu Sans"
     font_size: int = 82
@@ -281,6 +475,12 @@ class CaptionTheme:
 
     @classmethod
     def preset(cls, name: str) -> CaptionTheme:
+        """Load ``classic``, ``pop``, ``karaoke``, or ``bounce`` styling.
+
+        Args:
+            name: Built-in preset name.
+        """
+
         presets: dict[str, dict[str, Any]] = {
             "classic": {"font_size": 72, "highlight_color": "#FFFFFF", "outline_width": 5},
             "pop": {},
@@ -294,11 +494,28 @@ class CaptionTheme:
 
 @dataclass(slots=True)
 class Overlay:
+    """A static image displayed over selected portions of the video timeline.
+
+    Attributes:
+        source: Static image path.
+        at: Optional absolute start time.
+        duration: Optional absolute duration; defaults to two seconds during preparation.
+        during: Optional dialogue line identifier.
+        speaker: Optional speaker selector.
+        during_clip: Optional clip ID or zero-based index.
+        position: Canvas anchor.
+        width: Rendered width or the default 560 pixels.
+        opacity: Alpha multiplier from 0 through 1.
+        animation: Entrance/exit animation.
+        z_index: Ordering among image overlays.
+    """
+
     source: Path | str
     at: float | None = None
     duration: float | None = None
     during: str | None = None
     speaker: str | None = None
+    during_clip: int | str | None = None
     position: Anchor = "center"
     width: int | None = None
     opacity: float = 1.0
@@ -311,16 +528,108 @@ class Overlay:
             raise ConfigurationError("Overlay start cannot be negative")
         if self.duration is not None and self.duration <= 0:
             raise ConfigurationError("Overlay duration must be positive")
-        selectors = sum(value is not None for value in (self.at, self.during, self.speaker))
+        if self.duration is not None and self.at is None:
+            raise ConfigurationError("Overlay duration can only be used with at")
+        selectors = sum(
+            value is not None
+            for value in (self.at, self.during, self.speaker, self.during_clip)
+        )
         if selectors != 1:
-            raise ConfigurationError("Overlay needs exactly one of at, during, or speaker")
+            raise ConfigurationError(
+                "Overlay needs exactly one of at, during, speaker, or during_clip"
+            )
+        if isinstance(self.during_clip, bool) or (
+            isinstance(self.during_clip, int) and self.during_clip < 0
+        ):
+            raise ConfigurationError("Overlay clip index cannot be negative")
+        if isinstance(self.during_clip, str):
+            self.during_clip = self.during_clip.strip()
+            if not self.during_clip:
+                raise ConfigurationError("Overlay clip id cannot be empty")
+        if self.position not in {
+            "center",
+            "top",
+            "bottom",
+            "left",
+            "right",
+            "top-left",
+            "top-right",
+            "bottom-left",
+            "bottom-right",
+        }:
+            raise ConfigurationError(f"Unknown overlay position {self.position!r}")
+        if self.width is not None and self.width <= 0:
+            raise ConfigurationError("Overlay width must be positive")
         if not 0 <= self.opacity <= 1:
             raise ConfigurationError("Overlay opacity must be between 0 and 1")
+        if self.animation not in {"none", "pop", "fade", "slide", "bounce"}:
+            raise ConfigurationError(f"Unknown overlay animation {self.animation!r}")
+
+
+@dataclass(frozen=True, slots=True)
+class Soundtrack:
+    """A single background-music bed mixed beneath a project.
+
+    ``trim_start`` and ``trim_end`` select the source segment. When ``loop`` is true, only
+    that segment repeats. Fades are measured on the rendered timeline, and ``ducking``
+    enables smooth sidechain compression under dialogue.
+
+    Attributes:
+        source: Audio-bearing media path.
+        volume: Nonnegative gain.
+        trim_start: Selected source start in seconds.
+        trim_end: Optional selected source end in seconds.
+        loop: Whether the selected segment repeats.
+        fade_in: Fade-in duration in seconds.
+        fade_out: Fade-out duration in seconds.
+        ducking: Whether dialogue sidechain-compresses the music.
+    """
+
+    source: Path | str
+    volume: float = 0.15
+    trim_start: float = 0.0
+    trim_end: float | None = None
+    loop: bool = True
+    fade_in: float = 0.0
+    fade_out: float = 0.0
+    ducking: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source", Path(self.source))
+        if self.volume < 0:
+            raise ConfigurationError("Soundtrack volume cannot be negative")
+        if self.trim_start < 0:
+            raise ConfigurationError("Soundtrack trim start cannot be negative")
+        if self.trim_end is not None and self.trim_end <= self.trim_start:
+            raise ConfigurationError("Soundtrack trim end must be greater than trim start")
+        if self.fade_in < 0 or self.fade_out < 0:
+            raise ConfigurationError("Soundtrack fades cannot be negative")
 
 
 @dataclass(frozen=True, slots=True)
 class TextOverlay:
-    """Styled, timeline-bound text rendered independently from captions."""
+    """Styled, timeline-bound text rendered independently from captions.
+
+    Attributes:
+        text: Display text.
+        at: Optional absolute start time.
+        duration: Optional absolute duration; omitted means until video end.
+        during: Optional dialogue line identifier.
+        speaker: Optional speaker selector.
+        during_clip: Optional clip ID or zero-based index.
+        position: Canvas anchor.
+        font: Fontconfig font family.
+        font_size: Font size in pixels.
+        color: Text color in ``#RRGGBB`` form.
+        outline_color: Outline color in ``#RRGGBB`` form.
+        outline_width: Outline thickness in pixels.
+        shadow: Shadow depth in pixels.
+        bold: Whether to use bold text.
+        uppercase: Whether to uppercase the display text.
+        margin_x: Horizontal safe-area margin.
+        margin_y: Vertical safe-area margin.
+        z_index: Ordering among text overlays.
+    """
 
     text: str
     at: float | None = None
@@ -397,6 +706,28 @@ class TextOverlay:
 
 @dataclass(frozen=True, slots=True)
 class RenderSettings:
+    """Output encoding and caption settings.
+
+    Attributes:
+        width: Output width in pixels.
+        height: Output height in pixels.
+        fps: Constant output frame rate.
+        video_bitrate: Target video bitrate.
+        min_video_bitrate: Minimum video rate target.
+        max_video_bitrate: Maximum video rate target.
+        buffer_size: Encoder rate-control buffer size.
+        audio_bitrate: AAC bitrate.
+        audio_sample_rate: Output sample rate; fixed at 48 kHz.
+        audio_channels: Output channel count; fixed at stereo.
+        video_encoder: FFmpeg H.264 encoder name.
+        preset: Encoder speed/quality preset.
+        pixel_format: Output pixel format.
+        overwrite: Default output replacement policy.
+        captions: Whether to burn dialogue captions.
+        caption_sidecar: Whether to also write SRT.
+        normalize_audio: Whether to apply EBU-style loudness normalization.
+    """
+
     width: int = 1080
     height: int = 1920
     fps: int = 30
@@ -424,6 +755,15 @@ class RenderSettings:
 
 @dataclass(frozen=True, slots=True)
 class RenderResult:
+    """Metadata from a completed render.
+
+    Attributes:
+        output: Final output path.
+        duration: Output duration in seconds.
+        warnings: Nonfatal render warnings.
+        command: Executed FFmpeg argument vector.
+    """
+
     output: Path
     duration: float
     warnings: tuple[str, ...] = ()
@@ -432,6 +772,28 @@ class RenderResult:
 
 @dataclass(frozen=True, slots=True)
 class MediaInfo:
+    """FFprobe metadata for a media asset.
+
+    Attributes:
+        path: Resolved media path.
+        duration: Duration in seconds, or zero for a still image.
+        width: Video width when present.
+        height: Video height when present.
+        has_video: Whether the asset has a video stream.
+        has_audio: Whether the asset has an audio stream.
+        format_name: Container or demuxer format.
+        video_codec: Video codec name.
+        audio_codec: Audio codec name.
+        pixel_format: Video pixel format.
+        frame_rate: Average video frame rate.
+        sample_rate: Audio sample rate.
+        channels: Audio channel count.
+        color_primaries: Video color primaries.
+        color_transfer: Video transfer characteristic.
+        color_space: Video matrix coefficients.
+        bit_rate: Overall bitrate when reported.
+    """
+
     path: Path
     duration: float
     width: int | None

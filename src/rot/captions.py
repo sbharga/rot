@@ -19,6 +19,16 @@ class AssCaptionRenderer:
         width: int,
         height: int,
     ) -> Path:
+        """Write timed captions as an ASS sidecar.
+
+        Args:
+            path: Requested output path.
+            utterances: Timed dialogue lines.
+            theme: Caption styling.
+            width: Output canvas width.
+            height: Output canvas height.
+        """
+
         return write_ass(path, utterances, theme, width=width, height=height)
 
 

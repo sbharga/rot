@@ -235,7 +235,33 @@ class SignalCache:
 
 @dataclass(frozen=True, slots=True)
 class ClipDetectionSettings:
-    """Controls how interesting short-form windows are selected from a source video."""
+    """Controls how interesting short-form windows are selected from source video.
+
+    Attributes:
+        method: ``hybrid``, ``scene``, ``motion``, or ``audio`` ranking.
+        clip_duration: Desired candidate length in seconds.
+        clip_count: Maximum selected candidate count.
+        max_overlap_ratio: Maximum overlap between selected candidates.
+        max_per_source: Optional per-source limit during folder analysis.
+        scene_threshold: FFmpeg scene-change threshold.
+        analysis_interval: Sampling interval in seconds.
+        analysis_width: Even analysis-frame width.
+        motion_fps: Motion sampling frame rate.
+        audio_floor_db: RMS value normalized to zero.
+        audio_ceiling_db: RMS value normalized to one.
+        audio_mean_weight: Mean-energy contribution.
+        audio_peak_weight: Peak-energy contribution.
+        scene_half_saturation: Scene-score saturation constant.
+        motion_reference: Motion normalization reference.
+        scene_weight: Hybrid scene contribution.
+        motion_weight: Hybrid motion contribution.
+        audio_weight: Hybrid audio contribution.
+        boundary_penalty: Penalty for energetic window edges.
+        edge_probe: Edge-analysis duration in seconds.
+        snap: Whether selected edges snap to nearby boundaries.
+        snap_window: Maximum boundary movement in seconds.
+        snap_silence_level: Normalized audio trough threshold.
+    """
 
     # Selection.
     method: ClipDetectionMethod = "hybrid"
@@ -344,7 +370,17 @@ class ClipDetectionSettings:
 
 @dataclass(frozen=True, slots=True)
 class ClipCandidate:
-    """A ranked source interval that can be exported or added directly to a Project."""
+    """A ranked source interval that can be exported or added to a Project.
+
+    Attributes:
+        source: Source video path.
+        start: Candidate start time.
+        end: Candidate end time.
+        score: Combined ranking score.
+        scene_score: Normalized scene-change contribution.
+        motion_score: Normalized motion contribution.
+        audio_score: Normalized audio contribution.
+    """
 
     source: Path
     start: float
@@ -356,9 +392,17 @@ class ClipCandidate:
 
     @property
     def duration(self) -> float:
+        """Return candidate duration in seconds."""
+
         return self.end - self.start
 
     def as_clip(self, *, keep_audio: bool = True) -> Clip:
+        """Convert the candidate to a trim-aware Clip.
+
+        Args:
+            keep_audio: Preserve the source audio during project rendering.
+        """
+
         return Clip(
             self.source,
             trim_start=self.start,
@@ -370,7 +414,12 @@ class ClipCandidate:
 
 @dataclass(frozen=True, slots=True)
 class SkippedSource:
-    """A source that could not be analyzed, and why."""
+    """A source that could not be analyzed.
+
+    Attributes:
+        path: Skipped media path.
+        reason: Human-readable failure reason.
+    """
 
     path: Path
     reason: str
@@ -378,6 +427,16 @@ class SkippedSource:
 
 @dataclass(frozen=True, slots=True)
 class ClipSearchResult:
+    """Candidates, exports, and diagnostics from a clip search.
+
+    Attributes:
+        candidates: Ranked selected intervals.
+        sources: Successfully analyzed source paths.
+        exports: Encoded candidate paths.
+        skipped: Sources that could not be analyzed.
+        warnings: Nonfatal search warnings.
+    """
+
     candidates: tuple[ClipCandidate, ...]
     sources: tuple[Path, ...] = ()
     exports: tuple[Path, ...] = ()
@@ -394,11 +453,22 @@ class ClipSearchResult:
         return self.sources[0]
 
     def project_clips(self, *, keep_audio: bool = True) -> tuple[Clip, ...]:
+        """Convert every candidate into a project Clip.
+
+        Args:
+            keep_audio: Preserve candidate source audio.
+        """
+
         return tuple(candidate.as_clip(keep_audio=keep_audio) for candidate in self.candidates)
 
 
 class VideoClipFinder:
-    """Find and export high-energy windows from a local video using FFmpeg signals."""
+    """Find and export high-energy windows from a local video.
+
+    Args:
+        settings: Detection and ranking settings.
+        cache: Enable the default signal cache or provide a custom SignalCache.
+    """
 
     def __init__(
         self,
@@ -414,6 +484,13 @@ class VideoClipFinder:
     def analyze(
         self, source: str | Path, *, reporter: ProgressReporter | None = None
     ) -> tuple[ClipCandidate, ...]:
+        """Analyze one local video without exporting it.
+
+        Args:
+            source: Local video path.
+            reporter: Optional internal progress reporter.
+        """
+
         path = Path(source).expanduser().resolve()
         info = probe(path)
         if not info.has_video or info.duration <= 0:
@@ -439,7 +516,12 @@ class VideoClipFinder:
         *,
         reporter: ProgressReporter | None = None,
     ) -> ClipSearchResult:
-        """Rank clips across several sources, skipping any that cannot be analyzed."""
+        """Rank clips across several sources, skipping unreadable files.
+
+        Args:
+            sources: Local video paths.
+            reporter: Optional internal progress reporter.
+        """
         paths = [Path(source).expanduser().resolve() for source in sources]
         per_source = self.settings.max_per_source or self.settings.clip_count
         collected: list[ClipCandidate] = []
@@ -491,6 +573,16 @@ class VideoClipFinder:
         overwrite: bool = False,
         progress: bool = False,
     ) -> ClipSearchResult:
+        """Analyze one video and optionally export its candidates.
+
+        Args:
+            source: Local video path.
+            output_dir: Export directory.
+            export: Encode selected candidates when true.
+            overwrite: Permit replacing candidate files.
+            progress: Display analysis progress.
+        """
+
         path = Path(source).expanduser().resolve()
         with ProgressReporter(progress) as reporter:
             candidates = self.analyze(path, reporter=reporter)
@@ -510,6 +602,14 @@ class VideoClipFinder:
         *,
         overwrite: bool = False,
     ) -> tuple[Path, ...]:
+        """Encode candidates as deterministic H.264/AAC MP4 files.
+
+        Args:
+            candidates: Candidate intervals to export.
+            output_dir: Destination directory.
+            overwrite: Permit replacing existing exports.
+        """
+
         directory = Path(output_dir).expanduser().resolve()
         directory.mkdir(parents=True, exist_ok=True)
         outputs: list[Path] = []
@@ -926,6 +1026,18 @@ class FolderClipFinder(VideoClipFinder):
         recursive: bool = True,
         extensions: Collection[str] | None = None,
     ) -> ClipSearchResult:
+        """Rank videos found beneath a directory and optionally export winners.
+
+        Args:
+            root: Video-library directory.
+            output_dir: Export directory.
+            export: Encode selected candidates when true.
+            overwrite: Permit replacing exports.
+            progress: Display analysis progress.
+            recursive: Search subdirectories.
+            extensions: Optional accepted suffixes.
+        """
+
         sources = discover_videos(root, recursive=recursive, extensions=extensions)
         if not sources:
             searched = ", ".join(sorted(extensions or _VIDEO_EXTENSIONS))
@@ -947,7 +1059,14 @@ def discover_videos(
     extensions: Collection[str] | None = None,
     follow_symlinks: bool = False,
 ) -> tuple[Path, ...]:
-    """Find video files under ``root``, sorted and deduplicated by resolved path."""
+    """Find videos beneath a directory, sorted and deduplicated.
+
+    Args:
+        root: Directory to search.
+        recursive: Search subdirectories.
+        extensions: Optional accepted suffixes.
+        follow_symlinks: Include symbolic-link files.
+    """
     directory = Path(root).expanduser()
     if not directory.is_dir():
         raise ConfigurationError(f"Clip discovery needs a directory: {directory}")
@@ -977,6 +1096,14 @@ class YouTubeClipFinder(VideoClipFinder):
         *,
         overwrite: bool = False,
     ) -> Path:
+        """Download one permitted YouTube source as MP4.
+
+        Args:
+            url: YouTube video URL.
+            output: Destination MP4 path.
+            overwrite: Permit replacing an existing download.
+        """
+
         _validate_youtube_url(url)
         destination = Path(output).expanduser().resolve()
         if destination.suffix.lower() != ".mp4":
@@ -1036,6 +1163,17 @@ class YouTubeClipFinder(VideoClipFinder):
         overwrite_exports: bool = False,
         progress: bool = False,
     ) -> ClipSearchResult:
+        """Download, analyze, and optionally export a YouTube source.
+
+        Args:
+            url: YouTube video URL.
+            output_dir: Download and export directory.
+            export: Encode candidate clips when true.
+            overwrite_download: Permit replacing ``source.mp4``.
+            overwrite_exports: Permit replacing candidate files.
+            progress: Display analysis progress.
+        """
+
         directory = Path(output_dir).expanduser().resolve()
         source = self.download(url, directory / "source.mp4", overwrite=overwrite_download)
         return super().find(

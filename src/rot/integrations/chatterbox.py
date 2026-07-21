@@ -13,7 +13,16 @@ from ..models import StageProgressCallback, SynthesizedAudio
 
 @dataclass(frozen=True, slots=True)
 class ChatterboxVoice:
-    """Generate local speech with Chatterbox while preserving its neural watermark."""
+    """Generate local speech with Chatterbox while preserving its neural watermark.
+
+    Attributes:
+        reference_audio: Consented voice-reference recording.
+        variant: ``turbo``, ``english``, or ``multilingual`` model family.
+        device: Torch device or ``auto``.
+        exaggeration: English-model expressive exaggeration.
+        cfg_weight: English-model classifier-free guidance weight.
+        multilingual_version: Multilingual T3 model version.
+    """
 
     reference_audio: Path | str | None = None
     variant: Literal["turbo", "english", "multilingual"] = "turbo"
@@ -46,6 +55,15 @@ class ChatterboxVoice:
         language: str,
         progress: StageProgressCallback | None = None,
     ) -> SynthesizedAudio:
+        """Synthesize one utterance to an audio file.
+
+        Args:
+            text: Text to speak.
+            output_path: Destination WAV path.
+            language: Language identifier used by the multilingual model.
+            progress: Optional stage progress callback.
+        """
+
         try:
             import torch
             import torchaudio

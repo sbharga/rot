@@ -29,14 +29,24 @@ TikTokPrivacy = Literal[
 class TokenProvider(Protocol):
     """Supplies access tokens and may refresh them after an authorization failure."""
 
-    def access_token(self) -> str: ...
+    def access_token(self) -> str:
+        """Return the current bearer token without logging it."""
 
-    def refresh_access_token(self) -> str | None: ...
+        ...
+
+    def refresh_access_token(self) -> str | None:
+        """Refresh and return a token, or return None when unsupported."""
+
+        ...
 
 
 @dataclass(slots=True)
 class StaticTokenProvider:
-    """An in-memory token provider that deliberately does not persist credentials."""
+    """An in-memory token provider that never persists credentials.
+
+    Attributes:
+        token: Non-empty bearer token, excluded from representations.
+    """
 
     token: str = field(repr=False)
 
@@ -45,9 +55,13 @@ class StaticTokenProvider:
             raise ConfigurationError("Access token cannot be empty")
 
     def access_token(self) -> str:
+        """Return the configured token."""
+
         return self.token
 
     def refresh_access_token(self) -> None:
+        """Return None because static tokens cannot be refreshed."""
+
         return None
 
 
@@ -56,6 +70,19 @@ type Token = str | TokenProvider
 
 @dataclass(frozen=True, slots=True)
 class YouTubeShort:
+    """Metadata and disclosures for a YouTube Short.
+
+    Attributes:
+        title: Required 1-100 character title.
+        privacy: ``private``, ``unlisted``, or ``public``.
+        made_for_kids: YouTube audience declaration.
+        contains_synthetic_media: Altered/synthetic-content declaration.
+        has_paid_product_placement: Paid-promotion declaration.
+        description: Optional description.
+        tags: Optional tags.
+        category_id: Numeric YouTube category ID.
+    """
+
     title: str
     privacy: YouTubePrivacy
     made_for_kids: bool
@@ -80,6 +107,13 @@ class YouTubeShort:
 
 @dataclass(frozen=True, slots=True)
 class InstagramReel:
+    """Metadata for an Instagram Reel.
+
+    Attributes:
+        caption: Caption up to 2,200 characters.
+        share_to_feed: Whether the Reel also appears in the feed.
+    """
+
     caption: str = ""
     share_to_feed: bool = True
 
@@ -90,6 +124,19 @@ class InstagramReel:
 
 @dataclass(frozen=True, slots=True)
 class TikTokVideo:
+    """Metadata, interaction controls, and disclosures for TikTok.
+
+    Attributes:
+        privacy: TikTok privacy-level constant.
+        allow_comments: Permit comments.
+        allow_duet: Permit Duet.
+        allow_stitch: Permit Stitch.
+        brand_organic: Organic branded-content declaration.
+        branded_content: Paid branded-content declaration.
+        ai_generated: AI-generated-content declaration.
+        caption: Caption up to 2,200 UTF-16 code units.
+    """
+
     privacy: TikTokPrivacy
     allow_comments: bool
     allow_duet: bool
@@ -117,6 +164,15 @@ type PublishMetadata = YouTubeShort | InstagramReel | TikTokVideo
 
 @dataclass(frozen=True, slots=True)
 class PublishPreflight:
+    """Account and policy information collected before publishing.
+
+    Attributes:
+        platform: Target platform.
+        account_name: Resolved destination account.
+        warnings: Nonfatal preflight warnings.
+        details: Platform-specific confirmation details.
+    """
+
     platform: Platform
     account_name: str | None = None
     warnings: tuple[str, ...] = ()
@@ -125,6 +181,18 @@ class PublishPreflight:
 
 @dataclass(frozen=True, slots=True)
 class PublishResult:
+    """Successful remote publish result.
+
+    Attributes:
+        platform: Target platform.
+        remote_id: Upload or container identifier.
+        status: Terminal processing status.
+        post_id: Published post identifier when available.
+        url: Published URL when available.
+        account_name: Destination account.
+        warnings: Nonfatal warnings.
+    """
+
     platform: Platform
     remote_id: str
     status: str = "published"
@@ -136,6 +204,14 @@ class PublishResult:
 
 @dataclass(frozen=True, slots=True)
 class PublishFailure:
+    """One failed item in a batch publish.
+
+    Attributes:
+        platform: Failed platform.
+        message: Sanitized error message.
+        remote_id: Existing remote identifier when available.
+    """
+
     platform: Platform
     message: str
     remote_id: str | None = None
@@ -143,20 +219,42 @@ class PublishFailure:
 
 @dataclass(frozen=True, slots=True)
 class PublishBatchResult:
+    """Successful and failed outcomes from publish_all.
+
+    Attributes:
+        results: Successful platform results.
+        failures: Platform failures.
+    """
+
     results: tuple[PublishResult, ...] = ()
     failures: tuple[PublishFailure, ...] = ()
 
     @property
     def successful(self) -> bool:
+        """Return true when at least one publish succeeded and none failed."""
+
         return bool(self.results) and not self.failures
 
 
 class Publisher(Protocol):
+    """Interface implemented by platform publishers."""
+
     platform: Platform
 
-    def accepts(self, metadata: PublishMetadata) -> bool: ...
+    def accepts(self, metadata: PublishMetadata) -> bool:
+        """Return whether metadata belongs to this platform."""
 
-    def preflight(self, video: str | Path, metadata: PublishMetadata) -> PublishPreflight: ...
+        ...
+
+    def preflight(self, video: str | Path, metadata: PublishMetadata) -> PublishPreflight:
+        """Validate local media, metadata, account, and platform policy.
+
+        Args:
+            video: Rendered MP4 path.
+            metadata: Platform-specific post metadata.
+        """
+
+        ...
 
     def publish(
         self,
@@ -167,11 +265,30 @@ class Publisher(Protocol):
         progress: bool | ProgressCallback = True,
         wait_timeout: float = 900.0,
         poll_interval: float = 2.0,
-    ) -> PublishResult: ...
+    ) -> PublishResult:
+        """Publish after explicit consent.
+
+        Args:
+            video: Rendered MP4 path.
+            metadata: Platform-specific metadata.
+            consent: Explicit authorization for the external side effect.
+            progress: Progress display, callback, or false.
+            wait_timeout: Maximum processing wait in seconds.
+            poll_interval: Status polling interval in seconds.
+        """
+
+        ...
 
 
 @dataclass(frozen=True, slots=True)
 class PublishJob:
+    """A compatible publisher and metadata pair.
+
+    Attributes:
+        publisher: Target Publisher implementation.
+        metadata: Platform-specific post metadata.
+    """
+
     publisher: Publisher
     metadata: PublishMetadata
 
@@ -368,6 +485,13 @@ class _BasePublisher:
 
 
 class YouTubePublisher(_BasePublisher):
+    """Publish through YouTube's resumable upload API.
+
+    Args:
+        token: Bearer token or refresh-capable TokenProvider.
+        chunk_size: Positive upload chunk size divisible by 256 KiB.
+    """
+
     platform: Platform = "youtube"
 
     def __init__(self, token: Token, *, chunk_size: int = 8 * 1024 * 1024) -> None:
@@ -380,9 +504,18 @@ class YouTubePublisher(_BasePublisher):
         return f"YouTubePublisher(chunk_size={self.chunk_size!r})"
 
     def accepts(self, metadata: PublishMetadata) -> bool:
+        """Return whether metadata is a YouTubeShort."""
+
         return isinstance(metadata, YouTubeShort)
 
     def preflight(self, video: str | Path, metadata: PublishMetadata) -> PublishPreflight:
+        """Validate a rendered video and YouTube metadata.
+
+        Args:
+            video: Rendered MP4 path.
+            metadata: YouTubeShort metadata.
+        """
+
         if not isinstance(metadata, YouTubeShort):
             raise ConfigurationError("YouTubePublisher requires YouTubeShort metadata")
         _validate_media(video, "youtube")
@@ -400,6 +533,17 @@ class YouTubePublisher(_BasePublisher):
         wait_timeout: float = 900.0,
         poll_interval: float = 2.0,
     ) -> PublishResult:
+        """Upload and wait for terminal YouTube processing.
+
+        Args:
+            video: Rendered MP4 path.
+            metadata: YouTubeShort metadata.
+            consent: Explicit publishing authorization.
+            progress: Progress display, callback, or false.
+            wait_timeout: Maximum processing wait in seconds.
+            poll_interval: Status polling interval in seconds.
+        """
+
         self._check_options(consent, wait_timeout, poll_interval)
         check = self.preflight(video, metadata)
         assert isinstance(metadata, YouTubeShort)
@@ -516,6 +660,14 @@ class YouTubePublisher(_BasePublisher):
 
 
 class InstagramPublisher(_BasePublisher):
+    """Publish through Instagram's resumable Reels API.
+
+    Args:
+        token: Bearer token or refresh-capable TokenProvider.
+        user_id: Instagram professional-account ID.
+        api_version: Graph API version such as ``v25.0``.
+    """
+
     platform: Platform = "instagram"
 
     def __init__(self, token: Token, user_id: str, *, api_version: str = "v25.0") -> None:
@@ -535,9 +687,18 @@ class InstagramPublisher(_BasePublisher):
         return f"https://graph.instagram.com/{self.api_version}"
 
     def accepts(self, metadata: PublishMetadata) -> bool:
+        """Return whether metadata is an InstagramReel."""
+
         return isinstance(metadata, InstagramReel)
 
     def preflight(self, video: str | Path, metadata: PublishMetadata) -> PublishPreflight:
+        """Validate media and resolve the Instagram destination.
+
+        Args:
+            video: Rendered MP4 path.
+            metadata: InstagramReel metadata.
+        """
+
         if not isinstance(metadata, InstagramReel):
             raise ConfigurationError("InstagramPublisher requires InstagramReel metadata")
         _validate_media(video, "instagram")
@@ -565,6 +726,17 @@ class InstagramPublisher(_BasePublisher):
         wait_timeout: float = 900.0,
         poll_interval: float = 2.0,
     ) -> PublishResult:
+        """Upload and publish an Instagram Reel after explicit consent.
+
+        Args:
+            video: Rendered MP4 path.
+            metadata: InstagramReel metadata.
+            consent: Explicit publishing authorization.
+            progress: Progress display, callback, or false.
+            wait_timeout: Maximum processing wait in seconds.
+            poll_interval: Status polling interval in seconds.
+        """
+
         self._check_options(consent, wait_timeout, poll_interval)
         check = self.preflight(video, metadata)
         assert isinstance(metadata, InstagramReel)
@@ -675,6 +847,12 @@ class InstagramPublisher(_BasePublisher):
 
 
 class TikTokPublisher(_BasePublisher):
+    """Publish through TikTok's Content Posting API.
+
+    Args:
+        token: Bearer token or refresh-capable TokenProvider.
+    """
+
     platform: Platform = "tiktok"
     _base = "https://open.tiktokapis.com/v2/post/publish"
 
@@ -685,9 +863,18 @@ class TikTokPublisher(_BasePublisher):
         return "TikTokPublisher()"
 
     def accepts(self, metadata: PublishMetadata) -> bool:
+        """Return whether metadata is a TikTokVideo."""
+
         return isinstance(metadata, TikTokVideo)
 
     def preflight(self, video: str | Path, metadata: PublishMetadata) -> PublishPreflight:
+        """Validate media, account settings, and TikTok metadata.
+
+        Args:
+            video: Rendered MP4 path.
+            metadata: TikTokVideo metadata.
+        """
+
         if not isinstance(metadata, TikTokVideo):
             raise ConfigurationError("TikTokPublisher requires TikTokVideo metadata")
         _, info = _validate_media(video, "tiktok")
@@ -748,6 +935,17 @@ class TikTokPublisher(_BasePublisher):
         wait_timeout: float = 900.0,
         poll_interval: float = 2.0,
     ) -> PublishResult:
+        """Upload and publish a TikTok video after explicit consent.
+
+        Args:
+            video: Rendered MP4 path.
+            metadata: TikTokVideo metadata.
+            consent: Explicit publishing authorization.
+            progress: Progress display, callback, or false.
+            wait_timeout: Maximum processing wait in seconds.
+            poll_interval: Status polling interval in seconds.
+        """
+
         self._check_options(consent, wait_timeout, poll_interval)
         check = self.preflight(video, metadata)
         assert isinstance(metadata, TikTokVideo)
@@ -885,7 +1083,17 @@ def publish_all(
     poll_interval: float = 2.0,
     on_preflight: Callable[[tuple[PublishPreflight, ...]], bool | None] | None = None,
 ) -> PublishBatchResult:
-    """Preflight every target, then publish every valid job in the supplied order."""
+    """Preflight every target, then publish every valid job in order.
+
+    Args:
+        video: Rendered MP4 path shared by every job.
+        jobs: Ordered publishing jobs.
+        consent: Explicit authorization for all valid jobs.
+        progress: Progress display, callback, or false.
+        wait_timeout: Per-platform processing timeout in seconds.
+        poll_interval: Status polling interval in seconds.
+        on_preflight: Optional callback that reviews all destinations and may return true consent.
+    """
 
     if not jobs:
         raise ConfigurationError("At least one publishing job is required")
@@ -950,6 +1158,7 @@ __all__ = [
     "InstagramPublisher",
     "InstagramReel",
     "PublishBatchResult",
+    "Publisher",
     "PublishFailure",
     "PublishJob",
     "PublishPreflight",

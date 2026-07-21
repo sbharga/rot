@@ -50,9 +50,23 @@ class PublishError(RotError):
 
 
 class PublishTimeoutError(PublishError):
-    """A remote publishing operation did not reach a terminal state in time."""
+    """A remote publishing operation did not reach a terminal state in time.
+
+    Args:
+        message: Human-readable timeout description.
+        platform: Platform that timed out.
+        remote_id: Existing upload or container identifier.
+    """
 
     def __init__(self, message: str, *, platform: str, remote_id: str) -> None:
+        """Record a resumable remote identifier with the timeout.
+
+        Args:
+            message: Human-readable timeout description.
+            platform: Platform that timed out.
+            remote_id: Existing upload or container identifier.
+        """
+
         super().__init__(message)
         self.platform = platform
         self.remote_id = remote_id

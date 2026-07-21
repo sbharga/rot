@@ -71,6 +71,14 @@ project = (
     .script_file("script.rot")
     .captions("pop")
     .overlay_image("assets/reaction.png", during="hook", animation="bounce")
+    .soundtrack(
+        "assets/music.mp3",
+        volume=0.12,
+        trim=(8, 28),
+        fade_in=0.5,
+        fade_out=0.8,
+        ducking=True,
+    )
     .with_aligner(StableTSAligner("base"))
 )
 ```
@@ -89,6 +97,18 @@ than the default `project`.
 Backgrounds accept videos or still images and use `cover` fitting by default. Add multiple clips
 with `add_clip`, then select `cut`, `fade`, `crossfade`, `slide-left`, `slide-right`, or `zoom`
 between them. Video effects include zoom, punch zoom, pan, shake, blur, grayscale, and saturation.
+
+A single still image automatically fills the dialogue duration. Without dialogue, or when a still
+is one item in a multi-clip timeline, give it an explicit duration. Stills cannot be trimmed or
+have their playback speed changed:
+
+```python
+project = (
+    Project.short_form()
+    .background("title-card.png", duration=1.5, fit="contain", fill="blur")
+    .add_clip("gameplay.mp4", trim=(12, 25), loop=False)
+)
+```
 
 For horizontal footage, `fit="custom"` provides a controllable middle ground between preserving
 the complete frame and filling the vertical canvas. `fit_amount=0.0` is equivalent to `contain`,
@@ -123,6 +143,27 @@ project = (
 Use `overlay_image(..., at=3, duration=2)`, `during="line-id"`, or `speaker="alex"` to
 bind an overlay to time. A registered speaker portrait automatically follows that speaker's
 utterances.
+
+Image overlays also accept `during_clip="clip-id"` or a zero-based clip index. An absolute image
+without `duration` uses the reaction-friendly two-second default. PNG alpha is preserved; JPEG,
+PNG, and static WebP work when the installed FFmpeg can decode them.
+
+`soundtrack` configures one background-music bed. The selected trim repeats by default; disable
+looping to play it once, use fades for clean boundaries, and opt into smooth dialogue ducking:
+
+```python
+project.soundtrack(
+    "music.mp3",
+    volume=0.12,
+    trim=(15, 45),
+    loop=True,
+    fade_in=0.4,
+    fade_out=0.8,
+    ducking=True,
+)
+```
+
+A later `soundtrack` call replaces the previous one, and music never changes video duration.
 
 Non-caption text uses `overlay_text`. Assign clips stable IDs and bind a title to each complete
 clip without calculating timestamps:
@@ -317,6 +358,9 @@ Outputs are written atomically and existing files are protected unless `overwrit
 `--force` is supplied. Generated speech is cached under the platform user cache directory.
 
 ## Development
+
+The complete supported surface—including every class, method, field, callback, parameter,
+default, and return type—is in the [Python API reference](docs/reference/api.md).
 
 ```console
 uv sync --group dev

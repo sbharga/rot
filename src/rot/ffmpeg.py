@@ -18,6 +18,7 @@ from .models import (
     MediaInfo,
     Overlay,
     RenderSettings,
+    Soundtrack,
     Utterance,
     transition_overlap,
 )
@@ -220,8 +221,8 @@ class PreparedMedia:
     duration: float
     text_overlay_file: Path | None = None
     caption_file: Path | None = None
-    music: Path | None = None
-    music_volume: float = 0.15
+    music: Soundtrack | None = None
+    music_info: MediaInfo | None = None
     effects: list[Any] = field(default_factory=list)
 
 
@@ -273,7 +274,7 @@ class FFmpegCompiler:
         music_index: int | None = None
         if media.music is not None:
             music_index = input_index
-            command.extend(["-stream_loop", "-1", "-i", str(media.music)])
+            command.extend(["-i", str(Path(media.music.source).expanduser().resolve())])
             input_index += 1
 
         silence_index = input_index
@@ -460,6 +461,7 @@ class FFmpegCompiler:
         )
 
         audio_labels: list[str] = []
+        speech_labels: list[str] = []
         for position, (((utterance, _), index)) in enumerate(
             zip(media.utterances, utterance_indices, strict=True)
         ):
@@ -472,7 +474,7 @@ class FFmpegCompiler:
                 f"aformat=sample_fmts=fltp:channel_layouts=stereo,adelay={delay}|{delay},"
                 f"atrim=duration={_number(media.duration)}[{label}]"
             )
-            audio_labels.append(label)
+            speech_labels.append(label)
 
         clip_cursor = 0.0
         for position, ((clip, info, duration), index) in enumerate(
@@ -495,13 +497,51 @@ class FFmpegCompiler:
             )
             clip_cursor += duration - overlap
 
-        if music_index is not None:
-            graph.append(
-                f"[{music_index}:a]aresample={self.settings.audio_sample_rate},"
-                f"aformat=channel_layouts=stereo,volume={_number(media.music_volume)},"
-                f"atrim=duration={_number(media.duration)}[music]"
+        if music_index is not None and media.music is not None and media.music_info is not None:
+            music = media.music
+            source_end = music.trim_end or media.music_info.duration
+            segment_duration = source_end - music.trim_start
+            audible_duration = media.duration if music.loop else min(media.duration, segment_duration)
+            music_filters = [
+                f"atrim=start={_number(music.trim_start)}:end={_number(source_end)}",
+                "asetpts=PTS-STARTPTS",
+                f"aresample={self.settings.audio_sample_rate}",
+                "aformat=sample_fmts=fltp:channel_layouts=stereo",
+            ]
+            if music.loop:
+                samples = max(1, round(segment_duration * self.settings.audio_sample_rate))
+                music_filters.append(f"aloop=loop=-1:size={samples}")
+            music_filters.extend(
+                [
+                    f"atrim=duration={_number(audible_duration)}",
+                    f"volume={_number(music.volume)}",
+                ]
             )
-            audio_labels.append("music")
+            if music.fade_in > 0:
+                music_filters.append(f"afade=t=in:st=0:d={_number(music.fade_in)}")
+            if music.fade_out > 0:
+                fade_start = audible_duration - music.fade_out
+                music_filters.append(
+                    f"afade=t=out:st={_number(fade_start)}:d={_number(music.fade_out)}"
+                )
+            graph.append(f"[{music_index}:a]{','.join(music_filters)}[musicbed]")
+
+            if music.ducking and speech_labels:
+                speech_inputs = "".join(f"[{label}]" for label in speech_labels)
+                graph.append(
+                    f"{speech_inputs}amix=inputs={len(speech_labels)}:duration=longest:normalize=0,"
+                    "asplit=2[speechprogram][speechsidechain]"
+                )
+                graph.append(
+                    "[musicbed][speechsidechain]sidechaincompress="
+                    "threshold=0.03:ratio=8:attack=20:release=250[music]"
+                )
+                audio_labels.extend(("speechprogram", "music"))
+            else:
+                audio_labels.extend(speech_labels)
+                audio_labels.append("musicbed")
+        else:
+            audio_labels.extend(speech_labels)
         graph.append(f"[{silence_index}:a]atrim=duration={_number(media.duration)}[silence]")
         audio_labels.append("silence")
         mixed = "".join(f"[{label}]" for label in audio_labels)

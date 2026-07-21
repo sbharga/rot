@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from rot import Clip, MediaInfo, RenderSettings, Utterance
+from rot import Clip, MediaInfo, RenderSettings, Soundtrack, Utterance
 from rot.ffmpeg import FFmpegCompiler, PreparedMedia
 from rot.render import _clip_timeline_intervals
 
@@ -57,6 +57,67 @@ def test_compiler_uses_xfade(monkeypatch, tmp_path: Path) -> None:
     intervals = _clip_timeline_intervals(media.clips)
     assert intervals[0] == pytest.approx((0.0, 1.85))
     assert intervals[1] == pytest.approx((1.85, 3.7))
+
+
+def test_compiler_trims_loops_fades_and_ducks_music(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("rot.ffmpeg.executable", lambda name: name)
+    clip_path = tmp_path / "background.mp4"
+    speech_path = tmp_path / "speech.wav"
+    music_path = tmp_path / "music.wav"
+    utterance = Utterance("alex", "hello", start=0.25, end=1.25)
+    media = PreparedMedia(
+        clips=[
+            (
+                Clip(clip_path, duration=2),
+                MediaInfo(clip_path, 2, 1080, 1920, True, False),
+                2,
+            )
+        ],
+        utterances=[(utterance, speech_path)],
+        overlays=[],
+        portraits=[],
+        duration=2,
+        music=Soundtrack(
+            music_path,
+            trim_start=1,
+            trim_end=1.5,
+            fade_in=0.1,
+            fade_out=0.2,
+            ducking=True,
+        ),
+        music_info=MediaInfo(music_path, 3, None, None, False, True),
+    )
+    command = " ".join(FFmpegCompiler(RenderSettings()).compile(media, tmp_path / "out.mp4"))
+    assert "atrim=start=1:end=1.5" in command
+    assert "aloop=loop=-1:size=24000" in command
+    assert "afade=t=in:st=0:d=0.1" in command
+    assert "afade=t=out:st=1.8:d=0.2" in command
+    assert "asplit=2[speechprogram][speechsidechain]" in command
+    assert "sidechaincompress=threshold=0.03:ratio=8:attack=20:release=250" in command
+
+
+def test_compiler_plays_non_looping_music_once(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("rot.ffmpeg.executable", lambda name: name)
+    clip_path = tmp_path / "background.mp4"
+    music_path = tmp_path / "music.wav"
+    media = PreparedMedia(
+        clips=[
+            (
+                Clip(clip_path, duration=3),
+                MediaInfo(clip_path, 3, 1080, 1920, True, False),
+                3,
+            )
+        ],
+        utterances=[],
+        overlays=[],
+        portraits=[],
+        duration=3,
+        music=Soundtrack(music_path, loop=False),
+        music_info=MediaInfo(music_path, 1, None, None, False, True),
+    )
+    command = " ".join(FFmpegCompiler(RenderSettings()).compile(media, tmp_path / "out.mp4"))
+    assert "aloop=" not in command
+    assert "atrim=duration=1" in command
 
 
 def test_clip_label_intervals_follow_cut_order(tmp_path: Path) -> None:

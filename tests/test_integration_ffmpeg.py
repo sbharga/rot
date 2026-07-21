@@ -106,6 +106,82 @@ def test_real_vertical_render_contract(tmp_path: Path) -> None:
     )
 
 
+def test_real_still_overlay_and_ducked_soundtrack(tmp_path: Path) -> None:
+    ffmpeg = executable("ffmpeg")
+    background = tmp_path / "background.png"
+    overlay = tmp_path / "overlay.png"
+    speech = tmp_path / "speech.wav"
+    music = tmp_path / "music.wav"
+    for output, color, size in (
+        (background, "navy", "320x240"),
+        (overlay, "yellow@0.75", "100x100"),
+    ):
+        subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color=c={color}:s={size}:d=0.1",
+                "-frames:v",
+                "1",
+                str(output),
+            ],
+            check=True,
+        )
+    for output, frequency, duration in (
+        (speech, 440, 1.0),
+        (music, 220, 0.8),
+    ):
+        subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                f"sine=frequency={frequency}:sample_rate=48000:duration={duration}",
+                "-ac",
+                "2",
+                str(output),
+            ],
+            check=True,
+        )
+
+    project = (
+        Project(settings=RenderSettings(preset="ultrafast"))
+        .background(background, clip_id="still")
+        .add_speaker("narrator")
+        .script(f"@narrator [audio={speech}]: Still images and music work together")
+        .overlay_image(overlay, during_clip="still", width=220, animation="fade")
+        .soundtrack(
+            music,
+            volume=0.12,
+            trim=(0.1, 0.5),
+            fade_in=0.1,
+            fade_out=0.1,
+            ducking=True,
+        )
+    )
+    result = project.render(tmp_path / "still-music.mp4", progress=False)
+    info = probe(result.output)
+    assert result.duration == pytest.approx(1.0, abs=0.03)
+    assert (info.width, info.height, info.video_codec, info.audio_codec) == (
+        1080,
+        1920,
+        "h264",
+        "aac",
+    )
+    joined = " ".join(result.command)
+    assert "aloop=loop=-1" in joined
+    assert "sidechaincompress=" in joined
+
+
 def test_real_hybrid_clip_discovery_and_export(tmp_path: Path) -> None:
     ffmpeg = executable("ffmpeg")
     source = tmp_path / "source.mp4"

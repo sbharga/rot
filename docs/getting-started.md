@@ -55,6 +55,7 @@ project = (
     .script_file("script.rot")
     .captions("pop")
     .overlay_image("assets/reaction.png", during="hook", animation="bounce")
+    .soundtrack("assets/music.mp3", volume=0.12, fade_out=0.8, ducking=True)
     .with_aligner(StableTSAligner("base"))
 )
 ```
@@ -79,4 +80,4 @@ uv sync --extra youtube      # YouTube downloading with yt-dlp
 ```
 
 Continue with [composition](guides/composition.md), [captions and voices](guides/captions-and-voices.md),
-or a copyable [recipe](examples.md).
+the complete [Python API](reference/api.md), or a copyable [recipe](examples.md).

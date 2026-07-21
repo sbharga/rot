@@ -49,6 +49,23 @@ stable `id` as shown and target it with `during="hook"`:
 project.overlay_image("assets/reaction.png", during="hook", animation="bounce")
 ```
 
+Add a trimmed background-music loop with gentle boundaries and dialogue ducking:
+
+```python
+project.soundtrack(
+    "assets/music.mp3",
+    volume=0.12,
+    trim=(6, 26),
+    fade_in=0.4,
+    fade_out=0.8,
+    ducking=True,
+)
+```
+
+For a still-only narration background, replace `background.mp4` with `background.png`; its
+duration follows the narration automatically. A still in a multi-clip recipe needs an explicit
+`duration`.
+
 For synthesized speech instead, register the speaker with a voice provider and omit `audio=`. See
 [captions and voices](guides/captions-and-voices.md) for Chatterbox and Kokoro setup.
 

@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from rot import CaptionRenderer, ConfigurationError, MediaInfo, Project, RenderError, Script
+from rot.progress import ProgressReporter
 from rot.render import Renderer
 
 
@@ -51,6 +52,51 @@ def test_duplicate_clip_ids_and_unknown_text_targets_are_rejected(tmp_path: Path
     )
     with pytest.raises(ConfigurationError, match="unknown clip id"):
         Renderer(missing)._validate()
+
+    missing_image = Project.short_form().background(first).overlay_image(
+        first, during_clip="unknown"
+    )
+    with pytest.raises(ConfigurationError, match="unknown clip id"):
+        Renderer(missing_image)._validate()
+
+
+def test_stills_in_multi_clip_projects_need_durations(monkeypatch, tmp_path: Path) -> None:
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    first.touch()
+    second.touch()
+    monkeypatch.setattr(
+        "rot.render.probe",
+        lambda path: MediaInfo(Path(path), 0, 320, 240, True, False),
+    )
+    project = Project.short_form().background(first).add_clip(second, duration=1)
+    with pytest.raises(ConfigurationError, match="multi-clip"):
+        Renderer(project)._prepare(tmp_path, ProgressReporter(False), [])
+
+    speed_adjusted = Project.short_form().background(first, duration=1, speed=2)
+    with pytest.raises(ConfigurationError, match="playback speed"):
+        Renderer(speed_adjusted)._prepare(tmp_path, ProgressReporter(False), [])
+
+
+def test_soundtrack_fades_must_fit_audible_duration(monkeypatch, tmp_path: Path) -> None:
+    background = tmp_path / "background.mp4"
+    music = tmp_path / "music.wav"
+    background.touch()
+    music.touch()
+
+    def fake_probe(path: Path) -> MediaInfo:
+        if Path(path) == music:
+            return MediaInfo(music, 1, None, None, False, True)
+        return MediaInfo(background, 2, 320, 240, True, False)
+
+    monkeypatch.setattr("rot.render.probe", fake_probe)
+    project = (
+        Project.short_form()
+        .background(background, duration=2, loop=False)
+        .soundtrack(music, loop=False, fade_in=0.6, fade_out=0.6)
+    )
+    with pytest.raises(ConfigurationError, match="fade durations"):
+        Renderer(project)._prepare(tmp_path, ProgressReporter(False), [])
 
 
 def test_with_caption_renderer_replaces_the_default() -> None:

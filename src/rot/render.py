@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .captions import estimate_word_timings, write_srt, write_text_overlays_ass
-from .errors import ConfigurationError, RenderError, VoiceError
+from .errors import ConfigurationError, DependencyError, RenderError, VoiceError
 from .ffmpeg import FFmpegCompiler, PreparedMedia, run_ffmpeg
 from .models import (
     Clip,
@@ -28,7 +28,7 @@ from .models import (
     WordTiming,
     transition_overlap,
 )
-from .probe import probe
+from .probe import doctor, probe
 from .progress import ProgressReporter
 
 logger = logging.getLogger("rot")
@@ -153,6 +153,20 @@ class Renderer:
                 raise ConfigurationError(
                     f"Overlay targets unknown speaker {image_overlay.speaker!r}"
                 )
+            if (
+                isinstance(image_overlay.during_clip, int)
+                and image_overlay.during_clip >= len(project.clips)
+            ):
+                raise ConfigurationError(
+                    f"Overlay targets missing clip index {image_overlay.during_clip}"
+                )
+            if (
+                isinstance(image_overlay.during_clip, str)
+                and image_overlay.during_clip not in clip_ids
+            ):
+                raise ConfigurationError(
+                    f"Overlay targets unknown clip id {image_overlay.during_clip!r}"
+                )
         for text_overlay in project.text_overlays:
             if text_overlay.during is not None and text_overlay.during not in known_ids:
                 raise ConfigurationError(
@@ -179,8 +193,19 @@ class Renderer:
         for speaker in project.speakers.values():
             if speaker.portrait is not None and not Path(speaker.portrait).expanduser().is_file():
                 raise ConfigurationError(f"Portrait does not exist: {speaker.portrait}")
-        if project.music is not None and not project.music.expanduser().is_file():
-            raise ConfigurationError(f"Soundtrack does not exist: {project.music}")
+        if project.music is not None and not Path(project.music.source).expanduser().is_file():
+            raise ConfigurationError(f"Soundtrack does not exist: {project.music.source}")
+        if project.music is not None:
+            required = {"aloop"} if project.music.loop else set()
+            if project.music.fade_in > 0 or project.music.fade_out > 0:
+                required.add("afade")
+            if project.music.ducking:
+                required.add("sidechaincompress")
+            missing = sorted(required.difference(doctor().filters))
+            if missing:
+                raise DependencyError(
+                    "Soundtrack options require missing FFmpeg filters: " + ", ".join(missing)
+                )
 
     def _prepare(
         self,
@@ -222,20 +247,26 @@ class Renderer:
             info = probe(Path(clip.source).expanduser())
             if not info.has_video:
                 raise ConfigurationError(f"Background is not a video or image: {clip.source}")
+            if info.duration <= 0 and (clip.trim_start != 0 or clip.trim_end is not None):
+                raise ConfigurationError(f"Still image {clip.source} cannot be trimmed")
+            if info.duration <= 0 and clip.speed != 1:
+                raise ConfigurationError(f"Still image {clip.source} cannot change playback speed")
             available = max(0.0, (info.duration - clip.trim_start) / clip.speed)
             if clip.trim_end is not None:
                 available = (clip.trim_end - clip.trim_start) / clip.speed
             duration = clip.duration
             if duration is None:
+                if info.duration <= 0 and len(project.clips) > 1:
+                    raise ConfigurationError(
+                        f"Still image {clip.source} needs an explicit duration in a multi-clip project"
+                    )
                 if len(project.clips) == 1 and cursor > 0:
                     duration = cursor
                 elif available > 0:
                     duration = available
-                elif cursor > 0:
-                    duration = cursor
                 else:
                     raise ConfigurationError(
-                        f"Still image {clip.source} needs an explicit duration when there is no script"
+                        f"Still image {clip.source} needs an explicit duration when there is no dialogue"
                     )
             if info.duration > 0 and not clip.loop and duration > available + 0.01:
                 raise ConfigurationError(
@@ -261,9 +292,20 @@ class Renderer:
         duration = min(duration, visual_duration) if cursor > 0 else visual_duration
 
         overlays: list[tuple[Overlay, tuple[tuple[float, float], ...]]] = []
+        clip_intervals = _clip_timeline_intervals(clip_infos)
+        clip_ids = {clip.id: index for index, (clip, _, _) in enumerate(clip_infos) if clip.id}
         for image_overlay in sorted(project.overlays, key=lambda value: value.z_index):
+            overlay_info = probe(Path(image_overlay.source).expanduser())
+            if not overlay_info.has_video or overlay_info.duration > 0:
+                raise ConfigurationError(
+                    f"Overlay must be a static image: {image_overlay.source}"
+                )
             intervals: tuple[tuple[float, float], ...]
             if image_overlay.at is not None:
+                if image_overlay.at >= duration:
+                    raise ConfigurationError(
+                        f"Overlay starts after the video ends at {image_overlay.at:g}s"
+                    )
                 intervals = (
                     (
                         image_overlay.at,
@@ -273,18 +315,26 @@ class Renderer:
             elif image_overlay.during is not None:
                 line = next(item for item in utterances if item.id == image_overlay.during)
                 intervals = ((line.start or 0.0, line.end or duration),)
-            else:
+            elif image_overlay.speaker is not None:
                 intervals = tuple(
                     (item.start or 0.0, item.end or duration)
                     for item in utterances
                     if item.speaker == image_overlay.speaker
                 )
+            else:
+                target = image_overlay.during_clip
+                assert target is not None
+                index = target if isinstance(target, int) else clip_ids[target]
+                intervals = (clip_intervals[index],)
             overlays.extend((image_overlay, (interval,)) for interval in intervals)
 
         portraits: list[tuple[Path, str, int, str, tuple[tuple[float, float], ...]]] = []
         for speaker in project.speakers.values():
             if speaker.portrait is None:
                 continue
+            portrait_info = probe(Path(speaker.portrait).expanduser())
+            if not portrait_info.has_video or portrait_info.duration > 0:
+                raise ConfigurationError(f"Portrait must be a static image: {speaker.portrait}")
             intervals = tuple(
                 (item.start or 0.0, item.end or duration)
                 for item in utterances
@@ -302,8 +352,6 @@ class Renderer:
                 )
 
         text_overlay_items: list[tuple[TextOverlay, tuple[tuple[float, float], ...]]] = []
-        clip_intervals = _clip_timeline_intervals(clip_infos)
-        clip_ids = {clip.id: index for index, (clip, _, _) in enumerate(clip_infos) if clip.id}
         for text_overlay in sorted(project.text_overlays, key=lambda value: value.z_index):
             text_intervals: tuple[tuple[float, float], ...]
             if text_overlay.at is not None:
@@ -363,6 +411,25 @@ class Renderer:
             if rendered_caption.resolve() != caption_target.resolve():
                 shutil.copy2(rendered_caption, caption_target)
             caption_file = caption_target
+
+        music_info = None
+        if project.music is not None:
+            music_info = probe(Path(project.music.source).expanduser())
+            if not music_info.has_audio or music_info.duration <= 0:
+                raise ConfigurationError(
+                    f"Soundtrack must contain non-empty audio: {project.music.source}"
+                )
+            source_end = project.music.trim_end or music_info.duration
+            if project.music.trim_start >= music_info.duration or source_end > music_info.duration + 0.01:
+                raise ConfigurationError(
+                    f"Soundtrack trim must stay within its {music_info.duration:g}s duration"
+                )
+            segment_duration = source_end - project.music.trim_start
+            audible_duration = duration if project.music.loop else min(duration, segment_duration)
+            if project.music.fade_in + project.music.fade_out > audible_duration + 0.001:
+                raise ConfigurationError(
+                    "Soundtrack fade durations cannot exceed its audible duration"
+                )
         return PreparedMedia(
             clips=clip_infos,
             utterances=utterance_audio,
@@ -371,8 +438,8 @@ class Renderer:
             duration=duration,
             text_overlay_file=text_overlay_file,
             caption_file=caption_file,
-            music=project.music.expanduser().resolve() if project.music else None,
-            music_volume=project.music_volume,
+            music=project.music,
+            music_info=music_info,
             effects=project.global_effects,
         )
 
