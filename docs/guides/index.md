@@ -11,3 +11,4 @@ permalink: /guides/
 * [Composition](composition.md): clips, transitions, fitting, effects, and timeline-bound overlays.
 * [Captions and voices](captions-and-voices.md): caption styling, audio, alignment, and scripts.
 * [Clip discovery](clip-discovery.md): find and export permitted source highlights.
+* [Publishing](publishing.md): publish an existing MP4 through the official platform APIs.

@@ -36,6 +36,7 @@ uv sync --extra kokoro       # Kokoro-82M
 uv sync --extra align        # Stable-TS word alignment
 uv sync --extra openrouter   # OpenRouter script parsing
 uv sync --extra youtube      # YouTube downloading with yt-dlp
+uv sync --extra publish      # Official YouTube, Instagram, and TikTok publishing APIs
 ```
 
 ## Quick start
@@ -254,6 +255,57 @@ The exported clips preserve the source dimensions but are accurately cut and enc
 AAC 48 kHz stereo MP4s. A later `Project` render applies rot's vertical 1080×1920 output contract.
 Only download and reuse videos you have permission to process; YouTube availability, age gates,
 regional restrictions, and authentication are handled by yt-dlp and can still prevent a download.
+
+## Publish a rendered short
+
+Publishing is an explicit step for an existing MP4. It never happens as a side effect of rendering.
+Install the integration, create OAuth apps with the platforms, and provide current user access
+tokens through the environment:
+
+```console
+uv sync --extra publish
+export ROT_YOUTUBE_ACCESS_TOKEN=...
+export ROT_INSTAGRAM_ACCESS_TOKEN=...
+export ROT_INSTAGRAM_USER_ID=...
+export ROT_TIKTOK_ACCESS_TOKEN=...
+```
+
+Keep post metadata—but never tokens—in `publish.toml`:
+
+```toml
+[youtube]
+title = "The wildest final round"
+privacy = "private"
+made_for_kids = false
+contains_synthetic_media = true
+has_paid_product_placement = false
+tags = ["shorts", "gaming"]
+
+[instagram]
+caption = "The wildest final round #gaming"
+share_to_feed = true
+
+[tiktok]
+caption = "The wildest final round #gaming"
+privacy = "SELF_ONLY"
+allow_comments = true
+allow_duet = false
+allow_stitch = false
+brand_organic = false
+branded_content = false
+ai_generated = true
+```
+
+Preflight all configured accounts, review the destination summary, and publish:
+
+```console
+uv run rot publish short.mp4 --config publish.toml
+```
+
+Use `--yes` only when the command invocation itself represents explicit approval for this post.
+The command waits for each platform's terminal processing state and reports partial failures
+without discarding successful remote IDs. See the [publishing guide](docs/guides/publishing.md)
+for scopes, account restrictions, the typed Python API, and platform review requirements.
 
 ## Logging and progress
 

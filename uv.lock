@@ -3007,6 +3007,9 @@ kokoro = [
 openrouter = [
     { name = "httpx" },
 ]
+publish = [
+    { name = "httpx" },
+]
 tts = [
     { name = "chatterbox-tts" },
 ]
@@ -3030,6 +3033,7 @@ requires-dist = [
     { name = "chatterbox-tts", marker = "extra == 'tts'", specifier = ">=0.1.7" },
     { name = "httpx", marker = "extra == 'all'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'openrouter'", specifier = ">=0.27" },
+    { name = "httpx", marker = "extra == 'publish'", specifier = ">=0.27" },
     { name = "kokoro", marker = "extra == 'all'", specifier = ">=0.9.4" },
     { name = "kokoro", marker = "extra == 'kokoro'", specifier = ">=0.9.4" },
     { name = "numpy", marker = "extra == 'all'", specifier = ">=1.24" },
@@ -3042,7 +3046,7 @@ requires-dist = [
     { name = "yt-dlp", marker = "extra == 'all'", specifier = ">=2025.12.8" },
     { name = "yt-dlp", marker = "extra == 'youtube'", specifier = ">=2025.12.8" },
 ]
-provides-extras = ["tts", "chatterbox", "kokoro", "align", "openrouter", "youtube", "all"]
+provides-extras = ["tts", "chatterbox", "kokoro", "align", "openrouter", "youtube", "publish", "all"]
 
 [package.metadata.requires-dev]
 dev = [
