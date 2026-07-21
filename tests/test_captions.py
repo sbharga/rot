@@ -1,6 +1,7 @@
+from dataclasses import replace
 from pathlib import Path
 
-from rot import CaptionTheme, TextOverlay, Utterance, WordTiming
+from rot import CaptionTheme, Placement, TextOverlay, Utterance, WordTiming
 from rot.captions import estimate_word_timings, write_ass, write_srt, write_text_overlays_ass
 
 
@@ -40,3 +41,34 @@ def test_writes_timeline_text_independently_from_captions(tmp_path: Path) -> Non
     assert ",7,70,70,160,1" in content
     assert r"#5 — CATS \{EVERYWHERE\}\NSERIOUSLY" in content
     assert "Dialogue: 3,0:00:00.00,0:00:02.50" in content
+
+
+def test_writes_inline_styles_and_normalized_positions(tmp_path: Path) -> None:
+    overlay = TextOverlay(
+        "Plain [color=#f00][i]red[/i][/color]",
+        during_clip=0,
+        position=Placement(0.25, 0.5, anchor="left"),
+        bold=False,
+    )
+    content = write_text_overlays_ass(
+        tmp_path / "rich.ass",
+        [(overlay, ((0.0, 1.0),))],
+    ).read_text(encoding="utf-8")
+    assert r"\an4\pos(270,960)" in content
+    assert r"\c&H000000FF\fnDejaVu Sans\fs76\b0\i1" in content
+    assert "[color=" not in content
+
+
+def test_caption_highlight_temporarily_overrides_inline_color(tmp_path: Path) -> None:
+    utterance = Utterance("alex", "plain [color=#0f0]green[/color]", start=0, end=1)
+    utterance.words = (WordTiming("plain", 0, 0.5), WordTiming("green", 0.5, 1))
+    theme = CaptionTheme.preset("pop")
+    content = write_ass(
+        tmp_path / "rich-captions.ass",
+        [utterance],
+        replace(theme, position=Placement(0.5, 0.25)),
+    ).read_text(encoding="utf-8")
+    assert r"\an5\pos(540,480)" in content
+    assert r"\c&H0000FF00" in content
+    assert r"\c&H0035E1FF" in content
+    assert "[color=" not in content

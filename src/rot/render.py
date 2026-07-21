@@ -17,8 +17,10 @@ from .errors import ConfigurationError, DependencyError, RenderError, VoiceError
 from .ffmpeg import FFmpegCompiler, PreparedMedia, run_ffmpeg
 from .models import (
     Clip,
+    ClipTranscript,
     MediaInfo,
     Overlay,
+    Placement,
     ProgressCallback,
     RenderResult,
     Speaker,
@@ -30,6 +32,7 @@ from .models import (
 )
 from .probe import doctor, probe
 from .progress import ProgressReporter
+from .transcription import transcribe_clip
 
 logger = logging.getLogger("rot")
 
@@ -63,6 +66,74 @@ def _clip_timeline_intervals(
     )
     boundaries.append(cursor)
     return tuple(zip(boundaries, boundaries[1:], strict=False))
+
+
+def _clip_timeline_starts(clips: list[tuple[Clip, MediaInfo, float]]) -> tuple[float, ...]:
+    starts: list[float] = []
+    cursor = 0.0
+    for position, (clip, _, duration) in enumerate(clips):
+        starts.append(cursor)
+        overlap = (
+            transition_overlap(clip, duration, clips[position + 1][2])
+            if position < len(clips) - 1
+            else 0.0
+        )
+        cursor += duration - overlap
+    return tuple(starts)
+
+
+def _plain_caption_source(text: str) -> str:
+    return text.replace("[", "[[").replace("]", "]]")
+
+
+def _clip_transcript_utterances(
+    transcripts: tuple[ClipTranscript, ...],
+    clips: list[tuple[Clip, MediaInfo, float]],
+) -> list[Utterance]:
+    ownership = _clip_timeline_intervals(clips)
+    starts = _clip_timeline_starts(clips)
+    cues: list[Utterance] = []
+    for item in transcripts:
+        clip, info, duration = clips[item.clip_index]
+        source_end = clip.trim_end if clip.trim_end is not None else info.duration
+        pass_duration = min(duration, (source_end - clip.trim_start) / clip.speed)
+        if pass_duration <= 0:
+            continue
+        repeats = 1
+        if clip.loop:
+            repeats = max(1, int((duration - 1e-9) // pass_duration) + 1)
+        owned_start, owned_end = ownership[item.clip_index]
+        for repeat in range(repeats):
+            offset = starts[item.clip_index] + repeat * pass_duration
+            for segment in item.transcript.segments:
+                if segment.start >= pass_duration:
+                    continue
+                start = max(owned_start, offset + segment.start)
+                end = min(owned_end, offset + min(segment.end, pass_duration))
+                if end <= start:
+                    continue
+                words = tuple(
+                    WordTiming(
+                        word.text,
+                        max(start, offset + word.start),
+                        min(end, offset + word.end),
+                    )
+                    for word in segment.words
+                    if min(end, offset + word.end) > max(start, offset + word.start)
+                )
+                if not words:
+                    words = estimate_word_timings(segment.text, start, end)
+                cues.append(
+                    Utterance(
+                        f"clip-{item.clip_index}",
+                        _plain_caption_source(segment.text),
+                        gap_after=0,
+                        start=start,
+                        end=end,
+                        words=words,
+                    )
+                )
+    return sorted(cues, key=lambda cue: (cue.start or 0.0, cue.end or 0.0))
 
 
 class Renderer:
@@ -108,10 +179,16 @@ class Renderer:
                     raise RenderError("FFmpeg completed without creating a valid output file")
                 self._validate_output(probe(temp_output))
                 os.replace(temp_output, output)
-                if project.settings.caption_sidecar and project.script_data is not None:
-                    write_srt(output.with_suffix(".srt"), project.script_data.utterances)
+                if project.settings.caption_sidecar and media.caption_utterances:
+                    write_srt(output.with_suffix(".srt"), list(media.caption_utterances))
                 reporter.emit("done", 1, 1, f"Wrote {output}")
-                return RenderResult(output, media.duration, tuple(warning_messages), command)
+                return RenderResult(
+                    output,
+                    media.duration,
+                    tuple(warning_messages),
+                    command,
+                    media.transcripts,
+                )
         finally:
             if temp_output.exists():
                 temp_output.unlink()
@@ -119,6 +196,32 @@ class Renderer:
                 logger.info("Kept render work directory: %s", workdir)
             else:
                 shutil.rmtree(workdir, ignore_errors=True)
+
+    def transcribe_clips(
+        self, *, progress: bool | ProgressCallback
+    ) -> tuple[ClipTranscript, ...]:
+        """Transcribe opted-in clips without rendering a video."""
+
+        workdir = Path(tempfile.mkdtemp(prefix="rot-transcribe-"))
+        warnings: list[str] = []
+        try:
+            with ProgressReporter(progress) as reporter:
+                selected: list[tuple[int, Clip, MediaInfo]] = []
+                for index, clip in enumerate(self.project.clips):
+                    if not clip.transcribe:
+                        continue
+                    source = Path(clip.source).expanduser()
+                    if not source.is_file():
+                        raise ConfigurationError(f"Background does not exist: {clip.source}")
+                    info = probe(source)
+                    if not info.has_video:
+                        raise ConfigurationError(
+                            f"Background is not a video or image: {clip.source}"
+                        )
+                    selected.append((index, clip, info))
+                return self._transcribe_selected(selected, workdir, reporter, warnings)
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
 
     def _validate(self) -> None:
         project = self.project
@@ -207,6 +310,45 @@ class Renderer:
                     "Soundtrack options require missing FFmpeg filters: " + ", ".join(missing)
                 )
 
+    def _transcribe_selected(
+        self,
+        selected: list[tuple[int, Clip, MediaInfo]],
+        workdir: Path,
+        reporter: ProgressReporter,
+        warning_messages: list[str],
+    ) -> tuple[ClipTranscript, ...]:
+        if not selected:
+            return ()
+        transcriber = self.project.transcriber
+        if transcriber is None:
+            from .integrations.stable_ts import StableTSTranscriber
+
+            transcriber = StableTSTranscriber()
+        transcripts: list[ClipTranscript] = []
+        total = len(selected)
+        for completed, (clip_index, clip, info) in enumerate(selected):
+            reporter.emit(
+                "transcribe",
+                completed,
+                total,
+                f"Transcribing clip {completed + 1}/{total}",
+            )
+            result = transcribe_clip(
+                clip,
+                info,
+                clip_index,
+                transcriber,
+                workdir,
+                reporter.emit,
+            )
+            if not result.transcript.segments:
+                message = f"Clip {clip.id or clip_index!r} contains no detectable speech"
+                warning_messages.append(message)
+                python_warnings.warn(message, RuntimeWarning, stacklevel=3)
+            transcripts.append(result)
+        reporter.emit("transcribe", total, total, "Clip transcription complete")
+        return tuple(transcripts)
+
     def _prepare(
         self,
         workdir: Path,
@@ -247,6 +389,8 @@ class Renderer:
             info = probe(Path(clip.source).expanduser())
             if not info.has_video:
                 raise ConfigurationError(f"Background is not a video or image: {clip.source}")
+            if clip.facecam is not None and info.duration <= 0:
+                raise ConfigurationError("Facecam extraction requires a video clip")
             if info.duration <= 0 and (clip.trim_start != 0 or clip.trim_end is not None):
                 raise ConfigurationError(f"Still image {clip.source} cannot be trimmed")
             if info.duration <= 0 and clip.speed != 1:
@@ -291,6 +435,19 @@ class Renderer:
                 )
         duration = min(duration, visual_duration) if cursor > 0 else visual_duration
 
+        selected_for_transcription = [
+            (index, clip, info)
+            for index, (clip, info, _) in enumerate(clip_infos)
+            if clip.transcribe
+        ]
+        transcripts = self._transcribe_selected(
+            selected_for_transcription,
+            workdir,
+            reporter,
+            warning_messages,
+        )
+        clip_caption_utterances = _clip_transcript_utterances(transcripts, clip_infos)
+
         overlays: list[tuple[Overlay, tuple[tuple[float, float], ...]]] = []
         clip_intervals = _clip_timeline_intervals(clip_infos)
         clip_ids = {clip.id: index for index, (clip, _, _) in enumerate(clip_infos) if clip.id}
@@ -328,7 +485,9 @@ class Renderer:
                 intervals = (clip_intervals[index],)
             overlays.extend((image_overlay, (interval,)) for interval in intervals)
 
-        portraits: list[tuple[Path, str, int, str, tuple[tuple[float, float], ...]]] = []
+        portraits: list[
+            tuple[Path, str | Placement, int, str, tuple[tuple[float, float], ...]]
+        ] = []
         for speaker in project.speakers.values():
             if speaker.portrait is None:
                 continue
@@ -396,6 +555,22 @@ class Renderer:
                 height=project.settings.height,
             )
 
+        clip_caption_file = None
+        if project.settings.captions and clip_caption_utterances:
+            clip_caption_target = workdir / "clip-captions.ass"
+            rendered_clip_caption = project.caption_renderer.render(
+                clip_caption_target,
+                clip_caption_utterances,
+                project.clip_caption_theme,
+                width=project.settings.width,
+                height=project.settings.height,
+            )
+            if not rendered_clip_caption.is_file():
+                raise ConfigurationError("Caption renderer did not create an ASS file")
+            if rendered_clip_caption.resolve() != clip_caption_target.resolve():
+                shutil.copy2(rendered_clip_caption, clip_caption_target)
+            clip_caption_file = clip_caption_target
+
         caption_file = None
         if project.settings.captions and utterances:
             caption_target = workdir / "captions.ass"
@@ -411,6 +586,13 @@ class Renderer:
             if rendered_caption.resolve() != caption_target.resolve():
                 shutil.copy2(rendered_caption, caption_target)
             caption_file = caption_target
+
+        caption_utterances = tuple(
+            sorted(
+                [*clip_caption_utterances, *utterances],
+                key=lambda cue: (cue.start or 0.0, cue.end or 0.0),
+            )
+        )
 
         music_info = None
         if project.music is not None:
@@ -437,7 +619,10 @@ class Renderer:
             portraits=portraits,
             duration=duration,
             text_overlay_file=text_overlay_file,
+            clip_caption_file=clip_caption_file,
             caption_file=caption_file,
+            caption_utterances=caption_utterances,
+            transcripts=transcripts,
             music=project.music,
             music_info=music_info,
             effects=project.global_effects,

@@ -22,8 +22,8 @@ the short-form preset. Every composition method returns the same project.
 | Method | Parameters and behavior |
 | --- | --- |
 | `short_form()` | Construct the standard vertical-video preset. |
-| `background(source, *, trim=None, duration=None, loop=True, fit="cover", fit_amount=0.5, fill="black", fill_blur=40, anchor="center", keep_audio=False, volume=1, speed=1, clip_id=None)` | Clear existing clips and add the first video or still. A lone still may infer duration from dialogue; otherwise give it `duration`. |
-| `add_clip(source, *, trim=None, duration=None, loop=True, fit="cover", fit_amount=0.5, fill="black", fill_blur=40, anchor="center", keep_audio=False, volume=1, speed=1, transition="cut", transition_duration=0.3, clip_id=None)` | Append media in playback order. `transition` describes the incoming transition from the previous clip. |
+| `background(source, *, trim=None, duration=None, loop=True, fit="cover", fit_amount=0.5, fill="black", fill_blur=40, facecam=None, focus=None, position=None, transcribe=False, anchor="center", keep_audio=False, volume=1, speed=1, clip_id=None)` | Clear existing clips and add the first video or still. A lone still may infer duration from dialogue; otherwise give it `duration`. |
+| `add_clip(source, *, trim=None, duration=None, loop=True, fit="cover", fit_amount=0.5, fill="black", fill_blur=40, facecam=None, focus=None, position=None, transcribe=False, anchor="center", keep_audio=False, volume=1, speed=1, transition="cut", transition_duration=0.3, clip_id=None)` | Append media in playback order. `transition` describes the incoming transition from the previous clip. |
 | `transition(name, *, duration=0.3)` | Set the latest clip's outgoing transition. Names: `cut`, `fade`, `crossfade`, `slide-left`, `slide-right`, `zoom`. |
 | `overlay_image(source, *, at=None, duration=None, during=None, speaker=None, during_clip=None, position="center", width=None, opacity=1, animation="pop", z_index=0)` | Add a static image using exactly one timing selector. Absolute overlays default to two seconds. `width=None` means 560 pixels. Animations: `none`, `pop`, `fade`, `slide`, `bounce`. |
 | `overlay_text(text, *, at=None, duration=None, during=None, speaker=None, during_clip=None, position="top", font="DejaVu Sans", font_size=76, color="#FFFFFF", outline_color="#000000", outline_width=6, shadow=2, bold=True, uppercase=False, margin_x=70, margin_y=160, z_index=0)` | Add styled non-caption text. An absolute overlay without `duration` remains until video end. |
@@ -34,12 +34,19 @@ the short-form preset. Every composition method returns the same project.
 | `effect(effect, **options)` | Apply a built-in name, `EffectSpec`, or custom `Effect` to the whole visual track. |
 | `soundtrack(source, *, volume=0.15, trim=None, loop=True, fade_in=0, fade_out=0, ducking=False)` | Configure one music bed. A later call replaces it. `trim=(start, end)` selects the repeated segment; `loop=False` leaves silence after one play. Fades use output time. Ducking sidechain-compresses music beneath dialogue. |
 | `with_aligner(aligner)` | Use a `WordAligner` for accurate caption timing. |
+| `with_transcriber(transcriber)` | Replace the default `StableTSTranscriber` used by opted-in clips. |
+| `clip_captions(theme="pop", **overrides)` | Configure the separate caption lane generated from clip speech. |
+| `transcribe_clips(*, progress=True)` | Return cached structured transcripts for opted-in clips without rendering. |
 | `with_caption_renderer(renderer)` | Replace the built-in ASS renderer. |
 | `render(output, *, progress=True, overwrite=None, keep_workdir=False)` | Atomically encode an MP4. `progress` is a bool or `ProgressCallback`; `overwrite=None` uses settings. Returns `RenderResult`. |
 
 Image positions and anchors are `center`, `top`, `bottom`, `left`, `right`, and their four corner
 forms. `during` names an utterance ID, `speaker` repeats over that speaker's lines, and
 `during_clip` accepts a stable clip ID or zero-based index.
+
+Image overlays, text overlays, speaker portraits, and captions also accept `Placement` for exact
+normalized positioning. Inline text supports safe nested `color`, `b`, `i`, `u`, `font`, and
+`size` BBCode tags.
 
 ## Timeline and render models
 
@@ -49,8 +56,52 @@ forms. `during` names an utterance ID, `speaker` repeats over that speaker's lin
 Primary-track media fields: `source`, `trim_start=0`, `trim_end=None`, `duration=None`,
 `loop=True`, `fit="cover"`, `anchor="center"`, `keep_audio=False`, `volume=1`, `speed=1`,
 `effects=[]`, `transition="cut"`, `transition_duration=0.3`, `id=None`, `fit_amount=0.5`,
-`fill="black"`, and `fill_blur=40`. Still images cannot be trimmed and need explicit duration in
+`fill="black"`, `fill_blur=40`, `facecam=None`, `focus=None`, `position=None`, and
+`transcribe=False`. Still images cannot be trimmed and need explicit duration in
 multi-clip or dialogue-free projects; their playback speed must remain 1.
+
+`focus=(x, y)` controls the exact normalized source focal point for `cover`/`custom` cropping.
+`position=Placement(...)` controls normalized canvas placement for `contain`/`custom` foregrounds.
+`transcribe=True` enables language detection; pass `ClipTranscription` for a language override.
+
+<!-- rot-api:Placement -->
+### `Placement(x, y, anchor="center")`
+
+Normalized canvas point for a layered element. Coordinates range from 0 through 1; `anchor`
+selects the point on the element attached to that coordinate.
+
+<!-- rot-api:NormalizedRect -->
+### `NormalizedRect(x, y, width, height)`
+
+Normalized source or destination rectangle. Dimensions must be positive and the rectangle must
+remain inside its frame.
+
+<!-- rot-api:Facecam -->
+### `Facecam(crop, destination)`
+
+Extract an embedded facecam from the same custom-fit video clip. `crop` and `destination` are
+`NormalizedRect` values; the crop aspect-preservingly cover-fills the destination.
+
+<!-- rot-api:ClipTranscription -->
+### `ClipTranscription(language=None)`
+
+Per-clip speech-to-text options. `language=None` delegates language detection to the provider.
+
+<!-- rot-api:TranscriptSegment -->
+### `TranscriptSegment(text, start, end, words=())`
+
+One clip-local transcription segment with optional word-level `WordTiming` values.
+
+<!-- rot-api:Transcript -->
+### `Transcript(segments=(), language=None)`
+
+Structured provider output for one non-looped, trimmed, speed-adjusted clip pass. `text` joins all
+segment text.
+
+<!-- rot-api:ClipTranscript -->
+### `ClipTranscript(clip_index, clip_id, source, transcript)`
+
+Associates a clip-local `Transcript` with its project index, optional ID, and resolved source.
 
 <!-- rot-api:Overlay -->
 ### `Overlay`
@@ -63,7 +114,8 @@ Static-image fields mirror `Project.overlay_image`: `source`, the mutually exclu
 ### `TextOverlay`
 
 Immutable text configuration with the parameters shown on `Project.overlay_text`. Colors must use
-`#RRGGBB`; margins and outline/shadow widths are nonnegative.
+`#RRGGBB`; margins and outline/shadow widths are nonnegative. Text accepts safe inline BBCode and
+is stored as plain text plus parsed `styled_runs`.
 
 <!-- rot-api:Soundtrack -->
 ### `Soundtrack`
@@ -80,8 +132,8 @@ Speaker fields: `name`, `voice=None`, `portrait=None`, `language="en"`,
 <!-- rot-api:Utterance -->
 ### `Utterance`
 
-One dialogue line: `speaker`, `text`, optional `id`, optional prerecorded `audio`,
-`gap_after=0.15`, and renderer-resolved `start`, `end`, and `words`.
+One dialogue line: `speaker`, plain `text`, parsed inline `styled_runs`, optional `id`, optional
+prerecorded `audio`, `gap_after=0.15`, and renderer-resolved `start`, `end`, and `words`.
 
 <!-- rot-api:Script -->
 ### `Script(utterances=[])`
@@ -103,7 +155,8 @@ Audio created by a voice provider; `duration` is optional provider metadata.
 
 Fields: `name="pop"`, `font="DejaVu Sans"`, `font_size=82`, `primary_color="#FFFFFF"`,
 `highlight_color="#FFE135"`, `outline_color="#000000"`, `outline_width=7`, `shadow=2`,
-`position_y=1310`, `max_words=5`, and `uppercase=False`. `preset(name)` loads a built-in theme.
+`position_y=1310`, `position=None`, `max_words=5`, and `uppercase=False`. `position` accepts a
+normalized `Placement` and overrides `position_y`. `preset(name)` loads a built-in theme.
 
 <!-- rot-api:RenderSettings -->
 ### `RenderSettings`
@@ -115,9 +168,10 @@ Encoding fields: `width=1080`, `height=1920`, `fps=30`, `video_bitrate="10M"`,
 `overwrite=False`, `captions=True`, `caption_sidecar=False`, and `normalize_audio=False`.
 
 <!-- rot-api:RenderResult -->
-### `RenderResult(output, duration, warnings=(), command=())`
+### `RenderResult(output, duration, warnings=(), command=(), transcripts=())`
 
-Completed output path, duration, nonfatal warnings, and the executed FFmpeg argument vector.
+Completed output path, duration, nonfatal warnings, executed FFmpeg argument vector, and clip
+transcripts used by the render.
 
 <!-- rot-api:MediaInfo -->
 ### `MediaInfo`
@@ -154,6 +208,12 @@ Write the requested file or return the actual generated path.
 
 Implement `align(audio_path, text, *, language, progress=None) -> tuple[WordTiming, ...]`.
 Returned times are local to the supplied audio.
+
+<!-- rot-api:Transcriber -->
+### `Transcriber`
+
+Implement `transcribe(audio_path, *, language=None, progress=None) -> Transcript`. Returned segment
+and word timings are local to the prepared clip audio.
 
 <!-- rot-api:ScriptParser -->
 ### `ScriptParser`
@@ -221,6 +281,12 @@ comma-separated blend, or local `.pt` pack. `synthesize(...)` writes 24 kHz mono
 Parameters: `model="base"`, `device=None`, `backend="whisper"`, and `failure_threshold=0.25`.
 `align(audio_path, text, *, language, progress=None)` returns local word timings.
 
+<!-- rot-api:StableTSTranscriber -->
+### `StableTSTranscriber`
+
+Parameters: `model="base"`, `device=None`, and `backend="whisper"`. The `transcribe` method returns
+Stable-TS segments with word timestamps and lazily caches model instances.
+
 <!-- rot-api:OpenRouterParser -->
 ### `OpenRouterParser`
 
@@ -281,6 +347,17 @@ unreadable sources.
 Inherits `VideoClipFinder`. `download(url, output, *, overwrite=False)` writes one permitted MP4.
 `find(url, output_dir, *, export=True, overwrite_download=False, overwrite_exports=False,
 progress=False)` downloads, analyzes, and optionally exports.
+
+<!-- rot-api:TwitchClipFinder -->
+### `TwitchClipFinder(settings=None, *, client_id, access_token, cache=True, timeout=60)`
+
+Inherits `VideoClipFinder` and uses Twitch's official Clips Download API. The user token must
+include `channel:manage:clips` or `editor:manage:clips`, and its user must be the broadcaster or an
+authorized editor for the clip's channel. `download(clip, output, *, overwrite=False,
+variant="landscape")` accepts a clip ID or standard Twitch clip URL. `find(clip, output_dir, *,
+export=True, overwrite_download=False, overwrite_exports=False, progress=False,
+variant="landscape")` downloads, analyzes, and optionally exports. Variants are `landscape` and
+`portrait`; unavailable requested variants raise `DownloadError`.
 
 <!-- rot-api:discover_videos -->
 ### `discover_videos(root, *, recursive=True, extensions=None, follow_symlinks=False)`
@@ -396,6 +473,8 @@ All exceptions inherit `RotError` and accept the normal exception message unless
 - `VoiceError`: speech generation failure.
 <!-- rot-api:AlignmentError -->
 - `AlignmentError`: known-transcript alignment failure.
+<!-- rot-api:TranscriptionError -->
+- `TranscriptionError`: clip speech-to-text or prepared-audio failure.
 <!-- rot-api:ParserError -->
 - `ParserError`: remote or custom script parsing failure.
 <!-- rot-api:DownloadError -->

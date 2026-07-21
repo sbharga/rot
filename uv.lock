@@ -3010,8 +3010,14 @@ openrouter = [
 publish = [
     { name = "httpx" },
 ]
+transcribe = [
+    { name = "stable-ts" },
+]
 tts = [
     { name = "chatterbox-tts" },
+]
+twitch = [
+    { name = "httpx" },
 ]
 youtube = [
     { name = "yt-dlp" },
@@ -3034,6 +3040,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'all'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'openrouter'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'publish'", specifier = ">=0.27" },
+    { name = "httpx", marker = "extra == 'twitch'", specifier = ">=0.27" },
     { name = "kokoro", marker = "extra == 'all'", specifier = ">=0.9.4" },
     { name = "kokoro", marker = "extra == 'kokoro'", specifier = ">=0.9.4" },
     { name = "numpy", marker = "extra == 'all'", specifier = ">=1.24" },
@@ -3043,10 +3050,11 @@ requires-dist = [
     { name = "soundfile", marker = "extra == 'kokoro'", specifier = ">=0.13" },
     { name = "stable-ts", marker = "extra == 'align'", specifier = ">=2.19" },
     { name = "stable-ts", marker = "extra == 'all'", specifier = ">=2.19" },
+    { name = "stable-ts", marker = "extra == 'transcribe'", specifier = ">=2.19" },
     { name = "yt-dlp", marker = "extra == 'all'", specifier = ">=2025.12.8" },
     { name = "yt-dlp", marker = "extra == 'youtube'", specifier = ">=2025.12.8" },
 ]
-provides-extras = ["tts", "chatterbox", "kokoro", "align", "openrouter", "youtube", "publish", "all"]
+provides-extras = ["tts", "chatterbox", "kokoro", "align", "transcribe", "openrouter", "youtube", "twitch", "publish", "all"]
 
 [package.metadata.requires-dev]
 dev = [

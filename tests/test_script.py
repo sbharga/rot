@@ -36,3 +36,11 @@ def test_script_parser_rejects_duplicate_ids() -> None:
 def test_metadata_preserves_commas_inside_quotes() -> None:
     script = RotScriptParser().parse('@a [audio="a,b.wav", id=x]: Hello')
     assert script.utterances[0].audio == Path("a,b.wav")
+
+
+def test_script_parses_inline_caption_formatting_and_reports_its_line() -> None:
+    script = RotScriptParser().parse("@a: [b]Say [color=#f00]what[/color][/b]")
+    assert script.utterances[0].text == "Say what"
+    assert len(script.utterances[0].styled_runs) >= 2
+    with pytest.raises(ScriptError, match="Line 2:.*unclosed"):
+        RotScriptParser().parse("# heading\n@a: [b]broken")

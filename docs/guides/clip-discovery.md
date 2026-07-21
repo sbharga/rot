@@ -8,7 +8,7 @@ nav_order: 3
 # Clip discovery
 
 `rot clips TARGET` finds the strongest short-form windows in a source. `TARGET` can be a YouTube
-URL, a local video file, or a folder of existing footage.
+video, an authorized Twitch clip, a local video file, or a folder of existing footage.
 
 ## A YouTube video
 
@@ -20,6 +20,24 @@ uv sync --extra youtube
 uv run rot clips "https://www.youtube.com/watch?v=VIDEO_ID" \
   --method hybrid --duration 30 --count 5 -o clips
 ```
+
+## A Twitch clip
+
+Register a Twitch application and supply a user access token with `channel:manage:clips` or
+`editor:manage:clips`. Twitch's official download endpoint only permits the broadcaster or an
+authorized channel editor to download that channel's clips.
+
+```console
+uv sync --extra twitch
+export ROT_TWITCH_CLIENT_ID=...
+export ROT_TWITCH_ACCESS_TOKEN=...
+uv run rot clips "https://clips.twitch.tv/CLIP_ID" \
+  --method hybrid --duration 20 --count 2 -o clips
+```
+
+Landscape is downloaded by default so rot retains the original composition. If Twitch has an
+official portrait rendition for the clip, select it with `--twitch-variant portrait`. Requesting a
+variant that does not exist fails rather than silently changing orientation.
 
 ## A local file
 
@@ -72,7 +90,7 @@ energy, then rejects heavily overlapping candidates.
 | `audio` | Podcasts, interviews, and reactions, where energetic speech matters more than cuts. |
 
 Pass `--download-only` to keep `source.mp4` and inspect the suggested ranges without exporting; it
-applies only to YouTube targets.
+applies to YouTube and Twitch targets.
 
 ```python
 from rot import ClipDetectionSettings, Project, YouTubeClipFinder
@@ -82,6 +100,21 @@ finder = YouTubeClipFinder(
 )
 result = finder.find("https://youtu.be/VIDEO_ID", "build/youtube-clips")
 project = Project.short_form().background(result.project_clips()[0])
+```
+
+The equivalent official Twitch API is explicit about its credentials:
+
+```python
+import os
+
+from rot import ClipDetectionSettings, TwitchClipFinder
+
+finder = TwitchClipFinder(
+    ClipDetectionSettings(method="hybrid", clip_duration=20, clip_count=2),
+    client_id=os.environ["ROT_TWITCH_CLIENT_ID"],
+    access_token=os.environ["ROT_TWITCH_ACCESS_TOKEN"],
+)
+result = finder.find("https://clips.twitch.tv/CLIP_ID", "build/twitch-clips")
 ```
 
 All three signals are extracted in a single FFmpeg pass, with progress reported as it decodes.

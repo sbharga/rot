@@ -2,7 +2,16 @@ from pathlib import Path
 
 import pytest
 
-from rot import CaptionRenderer, ConfigurationError, MediaInfo, Project, RenderError, Script
+from rot import (
+    CaptionRenderer,
+    ConfigurationError,
+    Facecam,
+    MediaInfo,
+    NormalizedRect,
+    Project,
+    RenderError,
+    Script,
+)
 from rot.progress import ProgressReporter
 from rot.render import Renderer
 
@@ -76,6 +85,16 @@ def test_stills_in_multi_clip_projects_need_durations(monkeypatch, tmp_path: Pat
     speed_adjusted = Project.short_form().background(first, duration=1, speed=2)
     with pytest.raises(ConfigurationError, match="playback speed"):
         Renderer(speed_adjusted)._prepare(tmp_path, ProgressReporter(False), [])
+
+    facecam = Facecam(
+        NormalizedRect(0, 0, 0.25, 0.5),
+        NormalizedRect(0, 0.7, 1, 0.3),
+    )
+    extracted = Project.short_form().background(
+        first, duration=1, fit="custom", facecam=facecam
+    )
+    with pytest.raises(ConfigurationError, match="video clip"):
+        Renderer(extracted)._prepare(tmp_path, ProgressReporter(False), [])
 
 
 def test_soundtrack_fades_must_fit_audible_duration(monkeypatch, tmp_path: Path) -> None:

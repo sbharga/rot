@@ -1,4 +1,4 @@
-"""YouTube ingestion and signal-based clip discovery."""
+"""Remote-video ingestion and signal-based clip discovery."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from collections.abc import Collection, Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .errors import (
     ClipAnalysisError,
@@ -1233,6 +1233,212 @@ class YouTubeClipFinder(VideoClipFinder):
         return output
 
 
+TwitchClipVariant = Literal["landscape", "portrait"]
+
+
+class TwitchClipFinder(VideoClipFinder):
+    """Download one authorized Twitch clip, then find and export its best windows.
+
+    Twitch's official download API only permits a broadcaster or authorized channel editor to
+    download clips for that channel. The supplied user token must include either
+    ``channel:manage:clips`` or ``editor:manage:clips``.
+
+    Args:
+        settings: Detection and ranking settings.
+        client_id: Client ID belonging to the OAuth application that issued ``access_token``.
+        access_token: Scoped Twitch user access token.
+        cache: Enable the default signal cache or provide a custom SignalCache.
+        timeout: Per-request network timeout in seconds.
+    """
+
+    _API = "https://api.twitch.tv/helix"
+    _VALIDATE = "https://id.twitch.tv/oauth2/validate"
+    _SCOPES = frozenset({"channel:manage:clips", "editor:manage:clips"})
+
+    def __init__(
+        self,
+        settings: ClipDetectionSettings | None = None,
+        *,
+        client_id: str,
+        access_token: str,
+        cache: bool | SignalCache = True,
+        timeout: float = 60.0,
+    ) -> None:
+        super().__init__(settings, cache=cache)
+        self.client_id = client_id.strip()
+        self._access_token = access_token.strip()
+        self.timeout = timeout
+        if not self.client_id:
+            raise ConfigurationError("Twitch client_id must not be empty")
+        if not self._access_token:
+            raise ConfigurationError("Twitch access_token must not be empty")
+        if timeout <= 0:
+            raise ConfigurationError("Twitch timeout must be positive")
+
+    def download(
+        self,
+        clip: str,
+        output: str | Path,
+        *,
+        overwrite: bool = False,
+        variant: TwitchClipVariant = "landscape",
+    ) -> Path:
+        """Download one permitted Twitch clip as MP4 through the official API.
+
+        Args:
+            clip: Twitch clip ID or supported Twitch clip URL.
+            output: Destination MP4 path.
+            overwrite: Permit replacing an existing download.
+            variant: Exact official media variant to download.
+        """
+
+        clip_id = _twitch_clip_id(clip)
+        if variant not in {"landscape", "portrait"}:
+            raise ConfigurationError(f"Unknown Twitch clip variant {variant!r}")
+        destination = Path(output).expanduser().resolve()
+        if destination.suffix.lower() != ".mp4":
+            raise ConfigurationError("Twitch download output must use the .mp4 extension")
+        if destination.exists() and not overwrite:
+            raise DownloadError(f"Download output already exists: {destination}")
+
+        editor_id = self._validate_token()
+        metadata = self._get_json(f"{self._API}/clips", params={"id": clip_id})
+        clips = metadata.get("data")
+        if not isinstance(clips, list) or not clips or not isinstance(clips[0], dict):
+            raise DownloadError(f"Twitch clip was not found: {clip_id}")
+        broadcaster_id = clips[0].get("broadcaster_id")
+        if not isinstance(broadcaster_id, str) or not broadcaster_id:
+            raise DownloadError("Twitch clip metadata did not include a broadcaster ID")
+
+        payload = self._get_json(
+            f"{self._API}/clips/downloads",
+            params={
+                "broadcaster_id": broadcaster_id,
+                "editor_id": editor_id,
+                "clip_id": clip_id,
+            },
+        )
+        downloads = payload.get("data")
+        if not isinstance(downloads, list) or not downloads or not isinstance(downloads[0], dict):
+            raise DownloadError("Twitch did not return a clip download URL")
+        download_url = downloads[0].get(f"{variant}_download_url")
+        if not isinstance(download_url, str) or not download_url:
+            raise DownloadError(f"Twitch clip has no {variant} download available")
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f".{destination.stem}-{uuid.uuid4().hex}.mp4")
+        httpx = _twitch_httpx()
+        try:
+            try:
+                with httpx.stream(
+                    "GET", download_url, timeout=self.timeout, follow_redirects=True
+                ) as response:
+                    if not 200 <= response.status_code < 300:
+                        raise DownloadError(
+                            f"Twitch media download failed with HTTP {response.status_code}"
+                        )
+                    with temporary.open("wb") as handle:
+                        for chunk in response.iter_bytes():
+                            handle.write(chunk)
+            except httpx.HTTPError as exc:
+                # Transport errors may include the temporary signed media URL. Keep it out of
+                # user-facing messages because its query string is an ephemeral credential.
+                raise DownloadError("Could not download Twitch clip media") from exc
+            if not temporary.is_file() or temporary.stat().st_size == 0:
+                raise DownloadError("Twitch media download produced an empty file")
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return destination
+
+    def find(  # type: ignore[override]
+        self,
+        clip: str,
+        output_dir: str | Path,
+        *,
+        export: bool = True,
+        overwrite_download: bool = False,
+        overwrite_exports: bool = False,
+        progress: bool = False,
+        variant: TwitchClipVariant = "landscape",
+    ) -> ClipSearchResult:
+        """Download, analyze, and optionally export one Twitch clip.
+
+        Args:
+            clip: Twitch clip ID or supported Twitch clip URL.
+            output_dir: Download and export directory.
+            export: Encode candidate windows when true.
+            overwrite_download: Permit replacing ``source.mp4``.
+            overwrite_exports: Permit replacing candidate files.
+            progress: Display analysis progress.
+            variant: Exact official media variant to download.
+        """
+
+        directory = Path(output_dir).expanduser().resolve()
+        source = self.download(
+            clip,
+            directory / "source.mp4",
+            overwrite=overwrite_download,
+            variant=variant,
+        )
+        return super().find(
+            source, directory, export=export, overwrite=overwrite_exports, progress=progress
+        )
+
+    @property
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._access_token}",
+            "Client-Id": self.client_id,
+        }
+
+    def _validate_token(self) -> str:
+        payload = self._get_json(self._VALIDATE, include_client_id=False)
+        token_client_id = payload.get("client_id")
+        if token_client_id != self.client_id:
+            raise DownloadError("Twitch access token belongs to a different client ID")
+        editor_id = payload.get("user_id")
+        if not isinstance(editor_id, str) or not editor_id:
+            raise DownloadError("Twitch clip downloads require a user access token")
+        scopes = payload.get("scopes")
+        granted = (
+            {scope for scope in scopes if isinstance(scope, str)}
+            if isinstance(scopes, list)
+            else set()
+        )
+        if not granted.intersection(self._SCOPES):
+            expected = " or ".join(sorted(self._SCOPES))
+            raise DownloadError(f"Twitch access token must include {expected}")
+        return editor_id
+
+    def _get_json(
+        self,
+        endpoint: str,
+        *,
+        params: dict[str, str] | None = None,
+        include_client_id: bool = True,
+    ) -> dict[str, Any]:
+        httpx = _twitch_httpx()
+        headers = self._headers
+        if not include_client_id:
+            headers.pop("Client-Id")
+        try:
+            response = httpx.get(endpoint, headers=headers, params=params, timeout=self.timeout)
+        except httpx.HTTPError as exc:
+            raise DownloadError(f"Could not reach the Twitch API: {exc}") from exc
+        if not 200 <= response.status_code < 300:
+            detail = _twitch_error_message(response)
+            suffix = f": {detail}" if detail else ""
+            raise DownloadError(f"Twitch API returned HTTP {response.status_code}{suffix}")
+        try:
+            payload = response.json()
+        except (TypeError, ValueError) as exc:
+            raise DownloadError("Twitch API returned invalid JSON") from exc
+        if not isinstance(payload, dict):
+            raise DownloadError("Twitch API returned an invalid response")
+        return payload
+
+
 def _parse_signal_output(
     text: str, value_pattern: re.Pattern[str]
 ) -> tuple[tuple[float, float], ...]:
@@ -1322,13 +1528,70 @@ def _overlap_ratio(first: ClipCandidate, second: ClipCandidate) -> float:
 
 def _validate_youtube_url(url: str) -> None:
     parsed = urlparse(url)
-    host = (parsed.hostname or "").lower().rstrip(".")
-    youtube_host = (
+    if parsed.scheme not in {"http", "https"} or not _is_youtube_host(parsed.hostname):
+        raise ConfigurationError("Expected an http(s) YouTube or youtu.be URL")
+
+
+def _is_youtube_host(hostname: str | None) -> bool:
+    host = (hostname or "").lower().rstrip(".")
+    return (
         host == "youtu.be"
         or host == "youtube.com"
         or host.endswith(".youtube.com")
         or host == "youtube-nocookie.com"
         or host.endswith(".youtube-nocookie.com")
     )
-    if parsed.scheme not in {"http", "https"} or not youtube_host:
-        raise ConfigurationError("Expected an http(s) YouTube or youtu.be URL")
+
+
+def _is_twitch_host(hostname: str | None) -> bool:
+    host = (hostname or "").lower().rstrip(".")
+    return host in {"twitch.tv", "www.twitch.tv", "clips.twitch.tv"}
+
+
+def _twitch_clip_id(clip: str) -> str:
+    value = clip.strip()
+    if not value:
+        raise ConfigurationError("Twitch clip ID or URL must not be empty")
+    parsed = urlparse(value)
+    if not parsed.scheme and not parsed.netloc:
+        if re.fullmatch(r"[A-Za-z0-9_-]+", value):
+            return value
+        raise ConfigurationError("Invalid Twitch clip ID")
+    if parsed.scheme not in {"http", "https"} or not _is_twitch_host(parsed.hostname):
+        raise ConfigurationError("Expected a Twitch clip ID or http(s) Twitch clip URL")
+
+    host = (parsed.hostname or "").lower().rstrip(".")
+    parts = [part for part in parsed.path.split("/") if part]
+    clip_id: str | None = None
+    if host == "clips.twitch.tv":
+        if parts and parts[0] == "embed":
+            values = parse_qs(parsed.query).get("clip", [])
+            clip_id = values[0] if values else None
+        elif len(parts) == 1:
+            clip_id = parts[0]
+    elif len(parts) == 3 and parts[1].lower() == "clip":
+        clip_id = parts[2]
+    if clip_id is None or not re.fullmatch(r"[A-Za-z0-9_-]+", clip_id):
+        raise ConfigurationError("Expected a URL for one Twitch clip")
+    return clip_id
+
+
+def _twitch_httpx() -> Any:
+    try:
+        import httpx
+    except ImportError as exc:
+        raise DependencyError(
+            "Twitch downloads require the optional dependency: uv sync --extra twitch"
+        ) from exc
+    return httpx
+
+
+def _twitch_error_message(response: Any) -> str:
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    message = payload.get("message")
+    return message[:300] if isinstance(message, str) else ""

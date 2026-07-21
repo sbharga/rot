@@ -12,9 +12,13 @@ from .models import (
     CaptionRenderer,
     CaptionTheme,
     Clip,
+    ClipTranscript,
+    ClipTranscription,
     Effect,
     EffectSpec,
+    Facecam,
     Overlay,
+    Placement,
     ProgressCallback,
     RenderResult,
     RenderSettings,
@@ -23,6 +27,7 @@ from .models import (
     Soundtrack,
     Speaker,
     TextOverlay,
+    Transcriber,
     WordAligner,
 )
 from .script import RotScriptParser
@@ -41,11 +46,16 @@ class Project:
         self.speakers: dict[str, Speaker] = {}
         self.script_data: Script | None = None
         self.caption_theme = CaptionTheme.preset("pop")
+        self.clip_caption_theme = CaptionTheme(
+            name="pop",
+            position=Placement(0.5, 0.08, anchor="top"),
+        )
         self.caption_renderer: CaptionRenderer = AssCaptionRenderer()
         self.overlays: list[Overlay] = []
         self.text_overlays: list[TextOverlay] = []
         self.global_effects: list[Effect] = []
         self.aligner: WordAligner | None = None
+        self.transcriber: Transcriber | None = None
         self.music: Soundtrack | None = None
 
     @classmethod
@@ -65,6 +75,10 @@ class Project:
         fit_amount: float = 0.5,
         fill: str = "black",
         fill_blur: float = 40.0,
+        facecam: Facecam | None = None,
+        focus: tuple[float, float] | None = None,
+        position: Placement | None = None,
+        transcribe: bool | ClipTranscription = False,
         anchor: str = "center",
         keep_audio: bool = False,
         volume: float = 1.0,
@@ -82,6 +96,10 @@ class Project:
             fit_amount: Custom-fit interpolation from contain (0) to cover (1).
             fill: Letterbox treatment, either ``black`` or ``blur``.
             fill_blur: Blur radius for a blurred fill.
+            facecam: Optional crop extracted and placed over a custom-fit clip.
+            focus: Optional normalized source focal point for cropping.
+            position: Optional normalized placement for a contain/custom foreground.
+            transcribe: Opt into clip speech-to-text, optionally with per-clip settings.
             anchor: Crop or placement anchor.
             keep_audio: Mix the source audio into the output.
             volume: Source-audio gain.
@@ -102,6 +120,10 @@ class Project:
             fit_amount=fit_amount,
             fill=fill,
             fill_blur=fill_blur,
+            facecam=facecam,
+            focus=focus,
+            position=position,
+            transcribe=transcribe,
             anchor=anchor,
             keep_audio=keep_audio,
             volume=volume,
@@ -120,6 +142,10 @@ class Project:
         fit_amount: float = 0.5,
         fill: str = "black",
         fill_blur: float = 40.0,
+        facecam: Facecam | None = None,
+        focus: tuple[float, float] | None = None,
+        position: Placement | None = None,
+        transcribe: bool | ClipTranscription = False,
         anchor: str = "center",
         keep_audio: bool = False,
         volume: float = 1.0,
@@ -139,6 +165,10 @@ class Project:
             fit_amount: Custom-fit interpolation from contain (0) to cover (1).
             fill: Letterbox treatment, either ``black`` or ``blur``.
             fill_blur: Blur radius for a blurred fill.
+            facecam: Optional crop extracted and placed over a custom-fit clip.
+            focus: Optional normalized source focal point for cropping.
+            position: Optional normalized placement for a contain/custom foreground.
+            transcribe: Opt into clip speech-to-text, optionally with per-clip settings.
             anchor: Crop or placement anchor.
             keep_audio: Mix the source audio into the output.
             volume: Source-audio gain.
@@ -179,6 +209,10 @@ class Project:
                 fit_amount=fit_amount,
                 fill=fill,  # type: ignore[arg-type]
                 fill_blur=fill_blur,
+                facecam=facecam,
+                focus=focus,
+                position=position,
+                transcribe=transcribe,
                 anchor=anchor,  # type: ignore[arg-type]
                 keep_audio=keep_audio,
                 volume=volume,
@@ -201,7 +235,7 @@ class Project:
         during: str | None = None,
         speaker: str | None = None,
         during_clip: int | str | None = None,
-        position: str = "top",
+        position: str | Placement = "top",
         font: str = "DejaVu Sans",
         font_size: int = 76,
         color: str = "#FFFFFF",
@@ -223,7 +257,7 @@ class Project:
             during: Dialogue line identifier to follow.
             speaker: Speaker whose utterances should show the text.
             during_clip: Clip identifier or zero-based clip index to follow.
-            position: Canvas anchor.
+            position: Named canvas anchor or normalized :class:`Placement`.
             font: Fontconfig font family.
             font_size: Font size in output pixels.
             color: Text color in ``#RRGGBB`` form.
@@ -295,7 +329,7 @@ class Project:
         voice: Any = None,
         portrait: str | Path | None = None,
         language: str = "en",
-        portrait_position: str = "bottom-right",
+        portrait_position: str | Placement = "bottom-right",
         portrait_width: int = 420,
         portrait_animation: str = "pop",
     ) -> Project:
@@ -306,7 +340,7 @@ class Project:
             voice: Voice provider used when a line has no prerecorded audio.
             portrait: Static image shown while this speaker talks.
             language: Language identifier passed to voice and alignment providers.
-            portrait_position: Portrait canvas anchor.
+            portrait_position: Named portrait anchor or normalized :class:`Placement`.
             portrait_width: Portrait width in output pixels.
             portrait_animation: ``none``, ``pop``, ``fade``, ``slide``, or ``bounce``.
 
@@ -389,7 +423,7 @@ class Project:
         during: str | None = None,
         speaker: str | None = None,
         during_clip: int | str | None = None,
-        position: str = "center",
+        position: str | Placement = "center",
         width: int | None = None,
         opacity: float = 1.0,
         animation: str = "pop",
@@ -404,7 +438,7 @@ class Project:
             during: Dialogue line identifier to follow.
             speaker: Speaker whose utterances should show the image.
             during_clip: Clip identifier or zero-based clip index to follow.
-            position: Canvas anchor.
+            position: Named canvas anchor or normalized :class:`Placement`.
             width: Rendered width in pixels; defaults to 560.
             opacity: Alpha multiplier from 0 through 1.
             animation: ``none``, ``pop``, ``fade``, ``slide``, or ``bounce``.
@@ -500,6 +534,65 @@ class Project:
 
         self.aligner = aligner
         return self
+
+    def with_transcriber(self, transcriber: Transcriber) -> Project:
+        """Use a custom speech-to-text provider for opted-in clips.
+
+        Args:
+            transcriber: Provider implementing :class:`Transcriber`.
+
+        Returns:
+            This project for fluent chaining.
+        """
+
+        self.transcriber = transcriber
+        return self
+
+    def clip_captions(
+        self, theme: str | CaptionTheme = "pop", **overrides: Any
+    ) -> Project:
+        """Configure captions generated from opted-in clip audio.
+
+        Args:
+            theme: Preset name or complete caption theme.
+            **overrides: CaptionTheme fields that override the selected theme.
+
+        Returns:
+            This project for fluent chaining.
+        """
+
+        if isinstance(theme, str):
+            selected = CaptionTheme.preset(theme)
+            values = {
+                field: getattr(selected, field) for field in selected.__dataclass_fields__
+            }
+            if "position" not in overrides:
+                values["position"] = self.clip_caption_theme.position
+            base = CaptionTheme(**values)
+        else:
+            base = theme
+        if overrides:
+            values = {field: getattr(base, field) for field in base.__dataclass_fields__}
+            values.update(overrides)
+            base = CaptionTheme(**values)
+        self.clip_caption_theme = base
+        return self
+
+    def transcribe_clips(
+        self, *, progress: bool | ProgressCallback = True
+    ) -> tuple[ClipTranscript, ...]:
+        """Transcribe every opted-in clip and return cached clip-local results.
+
+        Args:
+            progress: Rich progress display, callback, or ``False``.
+
+        Returns:
+            One structured result per opted-in clip, in project order.
+        """
+
+        from .render import Renderer
+
+        return Renderer(self).transcribe_clips(progress=progress)
 
     def with_caption_renderer(self, renderer: CaptionRenderer) -> Project:
         """Replace the default ASS caption renderer.

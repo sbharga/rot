@@ -2,9 +2,30 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
-from .models import CaptionTheme, TextOverlay, Utterance, WordTiming
+from .models import (
+    CaptionTheme,
+    Placement,
+    TextOverlay,
+    Utterance,
+    WordTiming,
+    _InlineStyle,
+    _TextRun,
+)
+
+_ALIGNMENTS = {
+    "bottom-left": 1,
+    "bottom": 2,
+    "bottom-right": 3,
+    "left": 4,
+    "center": 5,
+    "right": 6,
+    "top-left": 7,
+    "top": 8,
+    "top-right": 9,
+}
 
 
 class AssCaptionRenderer:
@@ -68,6 +89,77 @@ def _animation(theme: CaptionTheme) -> str:
     return ""
 
 
+def _placement_tags(placement: Placement | None, width: int, height: int) -> str:
+    if placement is None:
+        return ""
+    x = round(placement.x * width)
+    y = round(placement.y * height)
+    return f"\\an{_ALIGNMENTS[placement.anchor]}\\pos({x},{y})"
+
+
+def _inline_tags(
+    style: _InlineStyle,
+    *,
+    color: str,
+    font: str,
+    font_size: int,
+    bold: bool,
+    force_color: str | None = None,
+) -> str:
+    selected_color = force_color or (_ass_color(style.color) if style.color is not None else color)
+    selected_font = style.font or font
+    selected_size = style.font_size or font_size
+    selected_bold = bold if style.bold is None else style.bold
+    return (
+        f"\\c{selected_color}\\fn{selected_font}\\fs{selected_size}"
+        f"\\b{1 if selected_bold else 0}\\i{1 if style.italic else 0}"
+        f"\\u{1 if style.underline else 0}"
+    )
+
+
+def _render_runs(
+    runs: tuple[_TextRun, ...],
+    *,
+    color: str,
+    font: str,
+    font_size: int,
+    bold: bool,
+    uppercase: bool,
+    force_color: str | None = None,
+) -> str:
+    rendered: list[str] = []
+    for run in runs:
+        tags = _inline_tags(
+            run.style,
+            color=force_color or color,
+            font=font,
+            font_size=font_size,
+            bold=bold,
+            force_color=force_color,
+        )
+        text = run.text.upper() if uppercase else run.text
+        rendered.append(f"{{{tags}}}{_escape_ass(text)}")
+    return "".join(rendered)
+
+
+def _styled_words(runs: tuple[_TextRun, ...]) -> list[tuple[_TextRun, ...]]:
+    words: list[tuple[_TextRun, ...]] = []
+    current: list[_TextRun] = []
+    for run in runs:
+        for part in re.split(r"(\s+)", run.text):
+            if not part:
+                continue
+            if part.isspace():
+                if current:
+                    words.append(tuple(current))
+                    current = []
+            else:
+                current.append(_TextRun(part, run.style))
+    if current:
+        words.append(tuple(current))
+    return words
+
+
 def write_ass(
     path: str | Path,
     utterances: list[Utterance],
@@ -77,7 +169,7 @@ def write_ass(
     height: int = 1920,
 ) -> Path:
     destination = Path(path)
-    margin_v = max(0, height - theme.position_y)
+    margin_v = 0 if theme.position is not None else max(0, height - theme.position_y)
     primary = _ass_color(theme.primary_color)
     highlight = _ass_color(theme.highlight_color)
     outline = _ass_color(theme.outline_color)
@@ -91,7 +183,7 @@ YCbCr Matrix: TV.709
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{theme.font},{theme.font_size},{primary},{highlight},{outline},&H60000000,-1,0,0,0,100,100,0,0,1,{theme.outline_width},{theme.shadow},2,70,70,{margin_v},1
+Style: Default,{theme.font},{theme.font_size},{primary},{highlight},{outline},&H60000000,-1,0,0,0,100,100,0,0,1,{theme.outline_width},{theme.shadow},{_ALIGNMENTS[theme.position.anchor] if theme.position is not None else 2},70,70,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -102,15 +194,31 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         words = list(utterance.words)
         if not words or utterance.start is None or utterance.end is None:
             continue
+        styled_words = _styled_words(utterance.styled_runs)
+        styles_match_timings = len(styled_words) == len(words)
         for index, active in enumerate(words):
             chunk_start = (index // theme.max_words) * theme.max_words
             chunk = words[chunk_start : chunk_start + theme.max_words]
             rendered: list[str] = []
-            for word in chunk:
-                content = _escape_ass(word.text.upper() if theme.uppercase else word.text)
-                color = highlight if word is active else primary
-                rendered.append(f"{{\\c{color}}}{content}")
-            tags = f"{{{animation}}}" if animation else ""
+            for word_index, word in enumerate(chunk, chunk_start):
+                runs = (
+                    styled_words[word_index]
+                    if styles_match_timings
+                    else (_TextRun(word.text, _InlineStyle()),)
+                )
+                rendered.append(
+                    _render_runs(
+                        runs,
+                        color=primary,
+                        font=theme.font,
+                        font_size=theme.font_size,
+                        bold=True,
+                        uppercase=theme.uppercase,
+                        force_color=highlight if word is active else None,
+                    )
+                )
+            event_tags = _placement_tags(theme.position, width, height) + animation
+            tags = f"{{{event_tags}}}" if event_tags else ""
             events.append(
                 "Dialogue: 0,"
                 f"{_ass_time(active.start)},{_ass_time(active.end)},Default,{utterance.speaker},"
@@ -157,37 +265,43 @@ YCbCr Matrix: TV.709
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 """
-    alignments = {
-        "bottom-left": 1,
-        "bottom": 2,
-        "bottom-right": 3,
-        "left": 4,
-        "center": 5,
-        "right": 6,
-        "top-left": 7,
-        "top": 8,
-        "top-right": 9,
-    }
     styles: list[str] = []
     events: list[str] = []
     for index, (overlay, intervals) in enumerate(overlays):
         style = f"TextOverlay{index}"
         primary = _ass_color(overlay.color)
         outline = _ass_color(overlay.outline_color)
+        placement = overlay.position if isinstance(overlay.position, Placement) else None
+        if placement is not None:
+            anchor = placement.anchor
+        else:
+            assert isinstance(overlay.position, str)
+            anchor = overlay.position
         styles.append(
             f"Style: {style},{overlay.font},{overlay.font_size},{primary},{primary},{outline},"
             f"&H60000000,{-1 if overlay.bold else 0},0,0,0,100,100,0,0,1,"
-            f"{overlay.outline_width},{overlay.shadow},{alignments[overlay.position]},"
-            f"{overlay.margin_x},{overlay.margin_x},{overlay.margin_y},1"
+            f"{overlay.outline_width},{overlay.shadow},{_ALIGNMENTS[anchor]},"
+            f"{0 if placement is not None else overlay.margin_x},"
+            f"{0 if placement is not None else overlay.margin_x},"
+            f"{0 if placement is not None else overlay.margin_y},1"
         )
-        text = overlay.text.upper() if overlay.uppercase else overlay.text
-        escaped = _escape_ass(text)
+        rendered_text = _render_runs(
+            overlay.styled_runs,
+            color=primary,
+            font=overlay.font,
+            font_size=overlay.font_size,
+            bold=overlay.bold,
+            uppercase=overlay.uppercase,
+        )
+        placement_tags = _placement_tags(placement, width, height)
+        if placement_tags:
+            rendered_text = f"{{{placement_tags}}}{rendered_text}"
         for start, end in intervals:
             if end <= start:
                 continue
             events.append(
                 f"Dialogue: {overlay.z_index},{_ass_time(start)},{_ass_time(end)},"
-                f"{style},,0,0,0,,{escaped}"
+                f"{style},,0,0,0,,{rendered_text}"
             )
     events_header = """
 

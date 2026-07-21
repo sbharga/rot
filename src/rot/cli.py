@@ -20,8 +20,11 @@ from rich.table import Table
 from .clips import (
     ClipDetectionSettings,
     FolderClipFinder,
+    TwitchClipFinder,
     VideoClipFinder,
     YouTubeClipFinder,
+    _is_twitch_host,
+    _is_youtube_host,
 )
 from .errors import ConfigurationError, RotError
 from .integrations import OpenRouterParser
@@ -69,9 +72,11 @@ def _parser() -> argparse.ArgumentParser:
     parse_command.add_argument("--speaker", action="append", default=[])
 
     clips = commands.add_parser(
-        "clips", help="Find the best clips in a YouTube video, local file, or folder"
+        "clips", help="Find the best clips in remote video, a local file, or a folder"
     )
-    clips.add_argument("target", metavar="TARGET", help="YouTube URL, video file, or folder")
+    clips.add_argument(
+        "target", metavar="TARGET", help="YouTube/Twitch clip URL, video file, or folder"
+    )
     clips.add_argument("-o", "--output-dir", default="youtube-clips")
     clips.add_argument("--method", choices=("hybrid", "scene", "motion", "audio"), default="hybrid")
     clips.add_argument("--duration", type=float, default=30.0)
@@ -89,6 +94,9 @@ def _parser() -> argparse.ArgumentParser:
     clips.add_argument("--json", action="store_true")
     clips.add_argument("--overwrite-downloads", action="store_true")
     clips.add_argument("--overwrite-exports", action="store_true")
+    clips.add_argument(
+        "--twitch-variant", choices=("landscape", "portrait"), default="landscape"
+    )
     clips.add_argument("-f", "--force", action="store_true", help="Overwrite downloads and exports")
 
     publish = commands.add_parser("publish", help="Publish an existing MP4 through official APIs")
@@ -207,6 +215,7 @@ def _doctor(_: argparse.Namespace) -> int:
         "Stable-TS extra": importlib.util.find_spec("stable_whisper") is not None,
         "OpenRouter extra": importlib.util.find_spec("httpx") is not None,
         "YouTube extra": importlib.util.find_spec("yt_dlp") is not None,
+        "Twitch extra": importlib.util.find_spec("httpx") is not None,
         "Publishing extra": importlib.util.find_spec("httpx") is not None,
     }
     for name, value in rows.items():
@@ -236,9 +245,14 @@ def _parse(args: argparse.Namespace) -> int:
 
 
 def _clip_target(target: str) -> tuple[str, str | Path]:
-    """Classify a clips TARGET as a YouTube URL, a local folder, or a local file."""
-    if urlparse(target).scheme in {"http", "https"}:
-        return "youtube", target
+    """Classify a clips TARGET as a supported remote URL, folder, or local file."""
+    parsed = urlparse(target)
+    if parsed.scheme in {"http", "https"}:
+        if _is_twitch_host(parsed.hostname):
+            return "twitch", target
+        if _is_youtube_host(parsed.hostname):
+            return "youtube", target
+        raise ConfigurationError(f"Unsupported video URL: {target}")
     path = Path(target).expanduser()
     if path.is_dir():
         return "folder", path
@@ -263,8 +277,10 @@ def _clips(args: argparse.Namespace) -> int:
     kind, target = _clip_target(args.target)
     cache = not args.no_cache
     export = not args.download_only
-    if kind != "youtube" and args.download_only:
-        raise ConfigurationError("--download-only only applies to YouTube URLs")
+    if kind not in {"youtube", "twitch"} and args.download_only:
+        raise ConfigurationError("--download-only only applies to YouTube or Twitch URLs")
+    if kind != "twitch" and args.twitch_variant != "landscape":
+        raise ConfigurationError("--twitch-variant only applies to Twitch URLs")
 
     if kind == "youtube":
         result = YouTubeClipFinder(settings, cache=cache).find(
@@ -274,6 +290,27 @@ def _clips(args: argparse.Namespace) -> int:
             overwrite_download=args.force or args.overwrite_downloads,
             overwrite_exports=args.force or args.overwrite_exports,
             progress=True,
+        )
+    elif kind == "twitch":
+        client_id = os.environ.get("ROT_TWITCH_CLIENT_ID", "")
+        access_token = os.environ.get("ROT_TWITCH_ACCESS_TOKEN", "")
+        if not client_id or not access_token:
+            raise ConfigurationError(
+                "Set ROT_TWITCH_CLIENT_ID and ROT_TWITCH_ACCESS_TOKEN to download Twitch clips"
+            )
+        result = TwitchClipFinder(
+            settings,
+            client_id=client_id,
+            access_token=access_token,
+            cache=cache,
+        ).find(
+            str(target),
+            args.output_dir,
+            export=export,
+            overwrite_download=args.force or args.overwrite_downloads,
+            overwrite_exports=args.force or args.overwrite_exports,
+            progress=True,
+            variant=args.twitch_variant,
         )
     elif kind == "folder":
         result = FolderClipFinder(settings, cache=cache).find(
