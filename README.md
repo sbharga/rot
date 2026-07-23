@@ -1,5 +1,7 @@
 # rot
 
+[![PyPI](https://img.shields.io/pypi/v/rot.svg)](https://pypi.org/project/rot/)
+
 `rot` is a Python library for assembling high-energy vertical videos for Instagram Reels,
 YouTube Shorts, and TikTok. It combines backgrounds, dialogue, local TTS, synced captions,
 speaker portraits, overlays, transitions, and effects into one FFmpeg render.
