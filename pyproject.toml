@@ -22,6 +22,12 @@ classifiers = [
 ]
 dependencies = ["rich>=13.7"]
 
+[project.urls]
+Homepage = "https://sbharga.github.io/rot/"
+Documentation = "https://sbharga.github.io/rot/"
+Repository = "https://github.com/sbharga/rot"
+Issues = "https://github.com/sbharga/rot/issues"
+
 [project.optional-dependencies]
 tts = ["chatterbox-tts>=0.1.7"]
 chatterbox = ["chatterbox-tts>=0.1.7"]
