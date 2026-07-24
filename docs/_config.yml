@@ -15,6 +15,7 @@ color_scheme: dark
 
 aux_links:
   "rot on GitHub": "https://github.com/sbharga/rot"
+  "rot on PyPI": "https://pypi.org/project/rot/"
 aux_links_new_tab: true
 
 footer_content: "Built with <a href=\"https://just-the-docs.com\">Just the Docs</a>."
